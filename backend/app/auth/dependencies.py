@@ -1,0 +1,187 @@
+"""Dependencies de autenticacao para rotas FastAPI."""
+
+import uuid
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
+
+from app.auth.jwt import decode_access_token
+from app.core.exceptions import ForbiddenException, UnauthorizedException
+from app.database.session import get_db
+from app.domain.contexts import UserContext
+from app.domain.enums import UserRole as DomainUserRole
+from app.domain.policies import ensure_admin, ensure_client, ensure_user_not_blocked
+from app.models.user import User
+from app.oauth.oauth_client import XOAuthClient
+from app.oauth.oauth_service import XOAuthService
+from app.repositories.audit_log_repository import AuditLogRepository
+from app.repositories.oauth_session_repository import OAuthSessionRepository
+from app.repositories.plan_repository import PlanRepository
+from app.repositories.refresh_token_repository import RefreshTokenRepository
+from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.twitter_account_repository import TwitterAccountRepository
+from app.repositories.user_repository import UserRepository
+from app.repositories.post_account_repository import PostAccountRepository
+from app.repositories.post_repository import PostRepository
+from app.repositories.scheduled_post_repository import ScheduledPostRepository
+from app.services.post_service import PostService
+from app.services.scheduled_post_service import ScheduledPostService
+from app.services.audit_log_service import AuditLogService
+from app.services.auth_service import AuthService
+from app.services.plan_service import PlanService
+from app.services.subscription_service import SubscriptionService
+from app.services.twitter_account_service import TwitterAccountService
+from app.services.user_service import UserService
+
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+
+def _credentials_exception(
+    message: str = "Nao foi possivel validar credenciais.",
+) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=message,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def get_user_service(db: Session = Depends(get_db)) -> UserService:
+    return UserService(UserRepository(db))
+
+
+def get_auth_service(db: Session = Depends(get_db)) -> AuthService:
+    return AuthService(UserRepository(db), RefreshTokenRepository(db))
+
+
+def get_plan_service(db: Session = Depends(get_db)) -> PlanService:
+    return PlanService(
+        PlanRepository(db),
+    )
+
+
+def get_subscription_service(
+    db: Session = Depends(get_db),
+) -> SubscriptionService:
+    return SubscriptionService(
+        SubscriptionRepository(db),
+        UserRepository(db),
+        PlanRepository(db),
+    )
+
+
+def get_twitter_account_service(db: Session = Depends(get_db)) -> TwitterAccountService:
+    return TwitterAccountService(
+        TwitterAccountRepository(db),
+        UserRepository(db),
+    )
+
+
+def get_post_service(
+    db: Session = Depends(get_db),
+) -> PostService:
+    return PostService(
+        post_repository=PostRepository(db),
+        post_account_repository=PostAccountRepository(db),
+        twitter_account_repository=TwitterAccountRepository(db),
+        user_repository=UserRepository(db),
+        x_oauth_client=XOAuthClient(),
+        subscription_service=get_subscription_service(db),
+    )   
+
+
+def get_scheduled_post_service(
+    db: Session = Depends(get_db),
+) -> ScheduledPostService:
+    return ScheduledPostService(
+        ScheduledPostRepository(db),
+        PostRepository(db),
+    )
+
+
+def get_x_oauth_service(
+    db: Session = Depends(get_db),
+    twitter_account_service: TwitterAccountService = Depends(
+        get_twitter_account_service
+    ),
+    subscription_service: SubscriptionService = Depends(
+    get_subscription_service,
+    ),
+) -> XOAuthService:
+    return XOAuthService(
+        oauth_client=XOAuthClient(),
+        twitter_account_service=twitter_account_service,
+        subscription_service=subscription_service,
+        oauth_session_repository=OAuthSessionRepository(db),
+    )
+
+
+def get_audit_log_service(db: Session = Depends(get_db)) -> AuditLogService:
+    """Fornece o service de auditoria para injecao em futuras rotas
+    administrativas. Nenhuma rota usa esta dependency ainda."""
+    return AuditLogService(AuditLogRepository(db))
+
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    user_service: UserService = Depends(get_user_service),
+) -> User:
+    try:
+        payload = decode_access_token(token)
+    except UnauthorizedException as exc:
+        raise _credentials_exception(exc.message) from exc
+
+    subject = payload["sub"]
+
+    try:
+        user_id = uuid.UUID(subject)
+    except ValueError as exc:
+        raise _credentials_exception("Token invalido.") from exc
+
+    user = user_service.get_user(user_id)
+    if user is None:
+        raise _credentials_exception("Usuario autenticado nao encontrado.")
+
+    try:
+        ensure_user_not_blocked(_to_user_context(user))
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=exc.message,
+        ) from exc
+
+    return user
+
+
+def get_current_client(current_user: User = Depends(get_current_user)) -> User:
+    try:
+        ensure_client(_to_user_context(current_user))
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=exc.message,
+        ) from exc
+
+    return current_user
+
+
+def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
+    try:
+        ensure_admin(_to_user_context(current_user))
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=exc.message,
+        ) from exc
+
+    return current_user
+
+
+def _to_user_context(user: User) -> UserContext:
+    return UserContext(
+        id=user.id,
+        role=DomainUserRole(user.role.value),
+        is_blocked=user.is_blocked,
+    )

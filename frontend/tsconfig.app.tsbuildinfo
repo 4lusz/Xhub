@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/StatusCard.tsx","./src/hooks/useHealthCheck.ts","./src/services/api.ts","./src/types/health.ts"],"version":"5.9.3"}
