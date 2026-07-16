@@ -12,6 +12,11 @@ class UserContext:
     id: uuid.UUID
     role: UserRole
     is_blocked: bool = False
+    # Primeiro acesso obrigatorio (ver docs/ROADMAP_PRIMEIRO_ACESSO.md):
+    # `True` enquanto o usuario ainda usa a senha temporaria definida
+    # pelo administrador (na criacao da conta ou em uma redefinicao) e
+    # ainda nao escolheu sua propria senha definitiva.
+    must_change_password: bool = False
 
 
 @dataclass(frozen=True)

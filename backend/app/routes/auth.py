@@ -19,9 +19,14 @@ minutos (expiracao do access token).
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.auth.dependencies import get_auth_service, get_current_user, get_user_service
+from app.auth.dependencies import (
+    get_auth_service,
+    get_current_user,
+    get_current_user_for_password_change,
+    get_user_service,
+)
 from app.core.exceptions import (
     BaseAppException,
     ConflictException,
@@ -41,6 +46,12 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    # Primeiro acesso obrigatorio (ver docs/ROADMAP_PRIMEIRO_ACESSO.md):
+    # o login e SEMPRE aceito normalmente (mesmo com senha temporaria);
+    # este campo e o sinal para o frontend redirecionar para a tela de
+    # troca de senha ANTES de tentar qualquer outra rota protegida,
+    # sem precisar de uma chamada extra (que seria bloqueada com 428).
+    must_change_password: bool
 
 
 class UserResponse(BaseModel):
@@ -49,10 +60,15 @@ class UserResponse(BaseModel):
     email: str
     role: str
     is_blocked: bool
+    must_change_password: bool
 
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class ChangePasswordRequest(BaseModel):
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 def _raise_http_error(exc: BaseAppException) -> None:
@@ -85,12 +101,17 @@ def login(
         )
         access_token = auth_service.create_access_token(user)
         refresh_token = auth_service.issue_refresh_token(user)
+        must_change_password = user.must_change_password
         db.commit()
     except BaseAppException as exc:
         db.rollback()
         _raise_http_error(exc)
 
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        must_change_password=must_change_password,
+    )
 
 
 @router.get("/me", response_model=UserResponse)
@@ -110,6 +131,41 @@ def get_current_user_profile(
         email=user.email,
         role=user.role.value if hasattr(user.role, "value") else str(user.role),
         is_blocked=user.is_blocked,
+        must_change_password=user.must_change_password,
+    )
+
+
+@router.post("/change-password", response_model=UserResponse)
+def change_password(
+    data: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_for_password_change),
+    user_service: UserService = Depends(get_user_service),
+) -> UserResponse:
+    """Conclui o primeiro acesso obrigatorio (ver
+    docs/ROADMAP_PRIMEIRO_ACESSO.md): troca a senha temporaria pela
+    senha definitiva escolhida pelo usuario. Unica rota protegida
+    acessivel enquanto `must_change_password=True` (ver
+    `get_current_user_for_password_change`) -- depois desta chamada,
+    o campo volta a `False` e todas as demais rotas sao liberadas
+    normalmente."""
+    try:
+        user = user_service.complete_first_access(
+            user_id=current_user.id,
+            new_password=data.new_password,
+        )
+        db.commit()
+    except BaseAppException as exc:
+        db.rollback()
+        _raise_http_error(exc)
+
+    return UserResponse(
+        id=str(user.id),
+        name=user.name,
+        email=user.email,
+        role=user.role.value if hasattr(user.role, "value") else str(user.role),
+        is_blocked=user.is_blocked,
+        must_change_password=user.must_change_password,
     )
 
 
@@ -125,12 +181,17 @@ def refresh(
     try:
         user, new_refresh_token = auth_service.rotate_refresh_token(data.refresh_token)
         access_token = auth_service.create_access_token(user)
+        must_change_password = user.must_change_password
         db.commit()
     except BaseAppException as exc:
         db.rollback()
         _raise_http_error(exc)
 
-    return TokenResponse(access_token=access_token, refresh_token=new_refresh_token)
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=new_refresh_token,
+        must_change_password=must_change_password,
+    )
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

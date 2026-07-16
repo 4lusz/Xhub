@@ -28,6 +28,12 @@ class TwitterAccount(TimestampMixin, Base):
     twitter_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     username: Mapped[str] = mapped_column(String(50), nullable=False)
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # URL publica da foto de perfil no X (`profile_image_url` retornado
+    # por `GET /2/users/me`, ja em resolucao maior -- ver
+    # `XOAuthClient._parse_user`). NULL para contas conectadas antes
+    # desta funcionalidade, ate que sejam reconectadas; o frontend usa
+    # as iniciais do nome como fallback nesse caso.
+    profile_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Tokens do OAuth2 do X. Nesta etapa (models) sao colunas de texto puro.
     # A etapa de OAuth/seguranca deve adicionar criptografia em repouso

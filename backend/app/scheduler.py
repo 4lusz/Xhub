@@ -34,6 +34,7 @@ from app.database.session import SessionLocal
 from app.oauth.oauth_client import XOAuthClient
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.post_account_repository import PostAccountRepository
+from app.repositories.post_media_repository import PostMediaRepository
 from app.repositories.post_repository import PostRepository
 from app.repositories.scheduled_post_repository import ScheduledPostRepository
 from app.repositories.subscription_repository import SubscriptionRepository
@@ -93,6 +94,7 @@ def _publish_claimed_post(post_id) -> None:
                 UserRepository(db),
                 PlanRepository(db),
             ),
+            post_media_repository=PostMediaRepository(db),
         )
         post_service.publish_post(post_id)
         logger.info(

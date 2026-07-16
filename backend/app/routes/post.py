@@ -22,10 +22,12 @@ from app.core.exceptions import (
     ValidationException,
 )
 from app.database.session import get_db
+from app.domain.media_rules import MAX_MEDIA_PER_POST
 from app.models.enums import PostAccountStatus, PostStatus
 from app.models.post import Post
 from app.models.scheduled_post import ScheduledPost
 from app.models.user import User
+from app.schemas.media import PostMediaResponse
 from app.services.post_service import PostService
 from app.services.scheduled_post_service import ScheduledPostService
 
@@ -52,6 +54,11 @@ class CreatePostRequest(BaseModel):
     # funcionalidade (publica sempre o texto original em todas as
     # contas).
     rendered_texts: dict[uuid.UUID, str] | None = Field(default=None)
+    # Midia (ver docs/ROADMAP_MEDIA.md): ids de PostMedia ja enviados
+    # via POST /media/upload (ainda sem post_id), na ordem de
+    # publicacao. Identica para todas as contas -- nunca alterada pela
+    # Publicacao Inteligente.
+    media_ids: list[uuid.UUID] | None = Field(default=None, max_length=MAX_MEDIA_PER_POST)
 
 
 class PostAccountResponse(BaseModel):
@@ -75,6 +82,7 @@ class PostResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     accounts: list[PostAccountResponse] = Field(default_factory=list)
+    media: list[PostMediaResponse] = Field(default_factory=list)
 
 
 class SchedulePostRequest(BaseModel):
@@ -99,6 +107,17 @@ def _to_post_account_response(post_account) -> PostAccountResponse:
     )
 
 
+def _to_media_response(media) -> PostMediaResponse:
+    return PostMediaResponse(
+        id=str(media.id),
+        media_type=media.media_type.value,
+        content_type=media.content_type,
+        file_size_bytes=media.file_size_bytes,
+        position=media.position,
+        created_at=media.created_at,
+    )
+
+
 def _to_post_response(post: Post) -> PostResponse:
     return PostResponse(
         id=str(post.id),
@@ -108,6 +127,7 @@ def _to_post_response(post: Post) -> PostResponse:
         created_at=post.created_at,
         updated_at=post.updated_at,
         accounts=[_to_post_account_response(account) for account in post.post_accounts],
+        media=[_to_media_response(media) for media in post.media],
     )
 
 
@@ -164,6 +184,7 @@ def create_post(
             text=request.text,
             twitter_account_ids=request.twitter_account_ids,
             rendered_texts=request.rendered_texts,
+            media_ids=request.media_ids,
         )
 
         db.commit()

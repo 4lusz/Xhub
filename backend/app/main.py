@@ -19,7 +19,7 @@ from app.core.bootstrap import sync_official_plans
 from app.core.logging_config import configure_logging, get_logger
 from app.integrations.groq_client import GroqClient
 from app.routes import admin, auth, health, oauth, twitter_account
-from app.routes import intelligent_publication, me, post
+from app.routes import intelligent_publication, media, me, post
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 from app.scheduler import shutdown_scheduler, start_scheduler
@@ -105,6 +105,7 @@ app.include_router(oauth.router, prefix=settings.API_V1_PREFIX)
 app.include_router(twitter_account.router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin.router, prefix=settings.API_V1_PREFIX)
 app.include_router(post.router, prefix=settings.API_V1_PREFIX)
+app.include_router(media.router, prefix=settings.API_V1_PREFIX)
 app.include_router(intelligent_publication.router, prefix=settings.API_V1_PREFIX)
 
 

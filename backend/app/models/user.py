@@ -41,6 +41,18 @@ class User(TimestampMixin, Base):
     # `ensure_subscription_active`.
     is_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Primeiro acesso obrigatorio (ver docs/ROADMAP_PRIMEIRO_ACESSO.md):
+    # `True` enquanto `password_hash` guarda uma senha TEMPORARIA
+    # (definida pelo administrador na criacao da conta ou em uma
+    # redefinicao via `POST /admin/users/{id}/reset-password`) -- todo
+    # usuario novo comeca com `True`. `POST /auth/change-password` e a
+    # UNICA rota protegida acessivel enquanto este campo for `True`
+    # (ver `app.auth.dependencies.get_current_user`); ao concluir a
+    # troca, o campo volta a `False` e o acesso normal e liberado.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+
     twitter_accounts: Mapped[list["TwitterAccount"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )

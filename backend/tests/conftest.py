@@ -49,4 +49,5 @@ def dummy_user() -> SimpleNamespace:
         email="test@example.com",
         role="client",
         is_blocked=False,
+        must_change_password=False,
     )

@@ -51,6 +51,7 @@ class TwitterAccountService(BaseService[TwitterAccount]):
         access_token: str,
         refresh_token: str,
         expires_at: datetime,
+        profile_image_url: str | None = None,
     ) -> TwitterAccount:
         self._ensure_user_exists(user_id)
         account = self.twitter_account_repository.get_by_user_and_twitter_user_id(
@@ -62,6 +63,7 @@ class TwitterAccountService(BaseService[TwitterAccount]):
             "twitter_user_id": twitter_user_id,
             "username": username,
             "display_name": display_name,
+            "profile_image_url": profile_image_url,
             # Tokens do OAuth do X sao cifrados (Fernet, autenticado)
             # antes de tocar o banco -- nunca persistir em texto puro.
             "access_token": encrypt_token(access_token),

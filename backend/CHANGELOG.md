@@ -1,3 +1,269 @@
+# CHANGELOG — Primeiro acesso obrigatório (troca de senha temporária)
+
+Funcionalidade de segurança: toda conta criada por um administrador
+nasce com uma senha TEMPORÁRIA — no primeiro login, o usuário é
+obrigado a defini-la de novo antes de acessar qualquer rota protegida.
+O mesmo ciclo se repete após uma redefinição administrativa de senha.
+Especificação completa, decisões técnicas e validação detalhada em
+`docs/ROADMAP_PRIMEIRO_ACESSO.md` — resumo abaixo.
+
+## Modelo de dados
+
+- **`User.must_change_password`** (nova coluna, migration
+  `c3d4e5f6a7b8`): `True` por padrão para contas novas (aplicado
+  explicitamente em `UserService.create_user`); usuários **existentes**
+  foram migrados com `False`, preservando o acesso normal de quem já
+  usava o sistema antes desta funcionalidade.
+- **`AuditAction.USER_PASSWORD_RESET`** (migration `d4e5f6a7b8c9`):
+  nova ação de auditoria para a redefinição administrativa — nunca
+  registra a senha em si, apenas o fato de que ocorreu.
+
+## Gate de acesso — um único ponto de checagem
+
+- `app/domain/policies.ensure_password_change_not_required` (mesmo
+  padrão de `ensure_user_not_blocked`, já existente).
+- `app/core/exceptions.PasswordChangeRequiredException` → mapeada para
+  **HTTP 428 Precondition Required** (RFC 6585), deliberadamente
+  distinta de 401/403 para o frontend saber redirecionar em vez de
+  tratar como sessão inválida ou acesso negado genérico.
+- `app/auth/dependencies.get_current_user` passou a aplicar esse gate.
+  Como `get_current_client`/`get_current_admin` dependem de
+  `get_current_user`, **toda rota protegida do XHub herda a proteção
+  automaticamente** — nenhuma rota individual precisou ser alterada.
+- Nova dependency `get_current_user_for_password_change` (resolve o
+  usuário autenticado SEM aplicar o gate) — usada exclusivamente pela
+  única rota que pode funcionar durante o primeiro acesso obrigatório:
+  `POST /auth/change-password`.
+
+## Conclusão do primeiro acesso
+
+- `POST /auth/change-password` (`UserService.complete_first_access`):
+  troca a senha (exige apenas a nova senha — o usuário já provou
+  conhecer a atual ao fazer login), valida que é diferente da atual,
+  zera `must_change_password`, e **revoga todas as sessões (refresh
+  tokens) do usuário** (`RefreshTokenRepository.revoke_all_for_user`,
+  novo método) — qualquer sessão antiga precisa autenticar de novo.
+- A senha temporária deixa de funcionar **imediatamente**: há uma
+  única coluna `password_hash`, sobrescrita — nunca existe um estado
+  em que as duas senhas sejam válidas ao mesmo tempo.
+
+## Redefinição administrativa
+
+- `POST /admin/users/{user_id}/reset-password`
+  (`UserService.reset_password`): gera uma senha temporária **aleatória**
+  (`app/auth/password.generate_temporary_password`, 16 caracteres, sem
+  caracteres ambíguos), marca `must_change_password=True` de novo,
+  revoga todas as sessões ativas. Retornada em texto puro **apenas
+  nesta resposta** — nunca persistida nem logada; o administrador
+  nunca vê a senha atual do usuário, só a nova temporária que ele
+  mesmo gerou.
+- `TokenResponse`/`UserResponse` (ambos os módulos de rota) ganharam
+  `must_change_password`, para o frontend saber o estado sem precisar
+  de uma chamada extra (que seria bloqueada com 428).
+
+## Validação
+
+- Ciclo completo testado via `curl` contra a API real (não apenas
+  dublês): criação → login com senha temporária → 428 em `/auth/me`,
+  `/twitter-accounts`, `/posts` → `change-password` rejeita mesma
+  senha e senha curta → sucesso → login com senha antiga falha (401)
+  → login com senha nova funciona e libera as rotas → refresh token
+  antigo revogado (401) → reset administrativo → 428 imediato mesmo
+  com o access token antigo ainda tecnicamente válido → novo ciclo de
+  primeiro acesso idêntico → audit log correto (`details=null`, sem
+  vazar a senha) → usuário comum não pode resetar senha de terceiros
+  (403).
+- `pytest`: 5 passaram, 1 falha pré-existente e não relacionada
+  (dublê desatualizado de uma mudança anterior, não desta tarefa) —
+  `conftest.py`/`test_routes_auth.py` atualizados para incluir o novo
+  campo `must_change_password` nos dublês/asserções.
+
+**Arquivos criados:** `docs/ROADMAP_PRIMEIRO_ACESSO.md`,
+`alembic/versions/c3d4e5f6a7b8_add_must_change_password_to_users.py`,
+`alembic/versions/d4e5f6a7b8c9_add_user_password_reset_to_audit_action_enum.py`.
+
+**Arquivos modificados:** `app/models/user.py`,
+`app/models/enums.py`, `app/domain/contexts.py`,
+`app/domain/policies.py`, `app/core/exceptions.py`,
+`app/auth/password.py`, `app/auth/dependencies.py`,
+`app/repositories/refresh_token_repository.py`,
+`app/services/user_service.py`, `app/routes/auth.py`,
+`app/routes/admin.py`, `app/scripts/create_admin.py`,
+`tests/conftest.py`, `tests/test_routes_auth.py`.
+
+---
+
+# CHANGELOG — Correção pós-deploy: endpoints v2 de upload de mídia do X
+
+Ao testar com uma conta real reconectada, o upload falhava com
+`400 Invalid Request: Missing media field in JSON` no INIT. Investigação
+(docs oficiais + teste diagnóstico direto contra a API real, com
+autorização do usuário) revelou que o X reestruturou o upload de mídia
+v2: não é mais um único endpoint com campo `command`, e sim caminhos
+REST dedicados por etapa:
+
+- `POST /2/media/upload/initialize` — corpo **JSON** (`media_type`,
+  `total_bytes`, `media_category`) → `data.id`.
+- `POST /2/media/upload/{id}/append` — multipart (`media` +
+  `segment_index`).
+- `POST /2/media/upload/{id}/finalize` — sem corpo → `data.processing_info`.
+- `GET /2/media/upload/{id}/status` — mesmo padrão de caminho (não
+  validado contra a API real ainda — só entra em jogo para gif/vídeo).
+
+`XOAuthClient` reescrito (`_media_initialize`/`_media_append`/
+`_media_finalize`/`_wait_for_media_processing`, unificados sobre um
+novo `_media_request` genérico) para usar os caminhos corretos.
+Validado contra a API real: INIT e APPEND concluídos com sucesso
+(`media_id` real retornado); FINALIZE bloqueado por `402 Payment
+Required: credits depleted` — falha de billing da conta do X do
+usuário, não da implementação, confirmando que autenticação
+(Bearer OAuth2 + `media.write`) e protocolo estão corretos.
+
+Uma correção anterior nesta mesma sessão (documentada abaixo) já havia
+trocado a URL do endpoint legado v1.1 pela v2 — essa troca de URL
+estava certa, mas o formato do corpo (multipart com `command=INIT`)
+ainda seguia o padrão antigo, o que só ficou evidente ao testar contra
+a API real.
+
+**Arquivos modificados:** `app/oauth/oauth_client.py`,
+`docs/ROADMAP_MEDIA.md`.
+
+---
+
+# CHANGELOG — Suporte completo a mídia (imagem/gif/vídeo) na publicação
+
+Implementação completa de mídia como parte da publicação (não uma
+funcionalidade separada), incluindo integração real com o protocolo de
+upload de mídia do X e compatibilidade total com a Publicação
+Inteligente (que continua atuando só sobre o texto). Especificação
+completa, decisões técnicas e validação detalhada em
+`docs/ROADMAP_MEDIA.md` — resumo abaixo.
+
+## Modelo de dados
+
+- **`PostMedia`** (nova tabela `post_media`, migration
+  `a1b2c3d4e5f6`): `post_id` nullable (mídia é enviada e validada
+  ANTES do post existir — mesmo fluxo do compositor do X), `user_id`
+  (dono, independente de anexação), `media_type` (enum nativo
+  `image`/`gif`/`video`), `storage_path`, `content_type`,
+  `file_size_bytes`, `position`. `Post.media` — relationship ordenada,
+  cascade delete.
+- **`TwitterAccount.profile_image_url`** (migration `b2c3d4e5f6a7`):
+  URL da foto de perfil real da conta no X (antes só existiam as
+  iniciais do nome no frontend).
+
+## Regras de negócio (`app/domain/media_rules.py`)
+
+- Até 4 arquivos por post; imagem (JPEG/PNG/WEBP) até 5MB; GIF até
+  15MB (sozinho, não combina com outra mídia); vídeo MP4 até 512MB
+  (sozinho, não combina com outra mídia) — mesmos limites/combinações
+  da API oficial do X.
+
+## Armazenamento (`app/core/media_storage.py`)
+
+- Disco local, streaming (nunca carrega o arquivo inteiro em memória),
+  organizado por usuário, sob `settings.MEDIA_STORAGE_DIR` (padrão
+  `media_storage/`, dentro do bind mount `./backend:/app` — sobrevive
+  a restarts sem exigir volume Docker novo). Adicionado a `.gitignore`.
+
+## Upload/gerenciamento (`MediaService`, `app/routes/media.py`)
+
+- `POST /media/upload` (multipart), `GET /media/{id}/file` (download
+  autenticado, ownership-checked, `FileResponse` streaming),
+  `DELETE /media/{id}` (só mídia ainda não anexada a um post).
+
+## Integração com posts (`PostService`)
+
+- `create_post(media_ids=...)`: valida posse + combinação ANTES de
+  criar o `Post`; anexa na mesma transação dos `PostAccount`.
+- `delete_post`: apaga os arquivos do disco ANTES de apagar o `Post`
+  (cascade do banco não sabe tocar o filesystem).
+- `publish_post`: para cada `PostAccount` pendente, envia a mídia ao X
+  **uma vez por conta** (cada conta tem seu próprio token/biblioteca de
+  mídia no X) via `XOAuthClient.upload_media`, e só então publica o
+  tweet com `media_ids`. Funciona para publicação imediata E agendada
+  sem nenhuma mudança no worker (`app/scheduler.py`) — ambos reusam o
+  mesmo `publish_post`.
+
+## Integração real com a API do X (`XOAuthClient`)
+
+- `upload_media`: protocolo oficial de upload chunked no endpoint v2
+  nativo (`POST https://api.x.com/2/media/upload`) — `INIT` → `APPEND`
+  (chunks de 4MB) → `FINALIZE` → `STATUS` (polling para o
+  processamento assíncrono de gif/vídeo). Reaproveita
+  `_extract_error_detail` (mesma preservação de motivo original de
+  erro já usada em `publish_post`). **Correção pós-implementação:** a
+  primeira versão usava por engano o endpoint legado v1.1
+  (`upload.twitter.com/1.1/media/upload.json`); ao ser questionado
+  sobre aderência à documentação oficial, verifiquei contra
+  `docs.x.com/x-api/media` e confirmei que o X migrou este endpoint
+  para `api.x.com/2/media/upload` — corrigido antes de qualquer teste
+  com conta real (protocolo INIT/APPEND/FINALIZE/STATUS e autenticação
+  Bearer OAuth2 user-context com escopo `media.write` permaneceram
+  corretos, só a URL estava desatualizada).
+- `publish_post(media_ids=...)`: inclui `{"media": {"media_ids":
+  [...]}}` no payload de `POST /2/tweets`.
+- `X_OAUTH_SCOPES` passou a incluir `media.write` (necessário para o
+  upload). **Contas conectadas antes desta mudança precisam ser
+  reconectadas** para publicar posts com mídia — o escopo é definido
+  na autorização, não pode ser adicionado retroativamente a um token
+  já emitido.
+- `get_authenticated_user` agora pede `user.fields=profile_image_url`
+  e faz upgrade de resolução da foto (`_normal` → `_400x400`, mesma
+  URL/CDN, sem chamada extra).
+
+## Bug pré-existente corrigido incidentalmente
+
+- `PostService.publish_post` usava `ConflictException` sem importá-la
+  (`NameError` garantido no caminho "post já está sendo publicado por
+  outra requisição" — uma corrida de concorrência legítima). Notado ao
+  tocar o bloco de imports para esta tarefa; corrigido junto por ser
+  uma linha isolada e obviamente quebrada, não uma mudança de escopo.
+
+## Validação
+
+- `alembic upgrade head` aplicado sem erro; schema conferido via
+  `psql \d post_media`.
+- `python -c "import app.main"` limpo.
+- `pytest`: 5 passaram, 1 falha pré-existente e não relacionada
+  (`test_get_subscription_returns_subscription_for_admin` — dublê de
+  teste desatualizado de uma mudança anterior, não desta tarefa).
+- Integração ponta a ponta via `curl` contra a API real: upload de
+  imagem, download autenticado com bytes idênticos ao original, 401
+  sem token, 404 para outro usuário (sem revelar existência), remoção
+  com limpeza do arquivo em disco.
+- Script de integração dentro do container (removido após validar):
+  `create_post(media_ids=...)` anexa corretamente; `publish_post`
+  chama `upload_media` uma vez por conta ANTES de
+  `publish_post(media_ids=...)` com os parâmetros certos (testado com
+  um `XOAuthClient` dublê, sem tocar a API real do X); `delete_post`
+  remove o arquivo do disco.
+- Não validado (sem conta real do X disponível neste ambiente): o
+  fluxo completo contra `api.x.com/2/media/upload`, incluindo o caso
+  assíncrono de vídeo/gif. Recomenda-se um teste manual com uma conta
+  reconectada (escopo `media.write`) antes do primeiro uso em
+  produção.
+
+**Arquivos criados:** `app/domain/media_rules.py`,
+`app/core/media_storage.py`, `app/models/post_media.py`,
+`app/repositories/post_media_repository.py`,
+`app/services/media_service.py`, `app/schemas/media.py`,
+`app/routes/media.py`,
+`alembic/versions/a1b2c3d4e5f6_create_post_media_table.py`,
+`alembic/versions/b2c3d4e5f6a7_add_profile_image_url_to_twitter_accounts.py`,
+`docs/ROADMAP_MEDIA.md`.
+
+**Arquivos modificados:** `app/models/enums.py`, `app/models/post.py`,
+`app/models/twitter_account.py`, `app/models/__init__.py`,
+`app/repositories/post_repository.py`, `app/services/post_service.py`,
+`app/routes/post.py`, `app/oauth/oauth_client.py`,
+`app/oauth/oauth_service.py`, `app/services/twitter_account_service.py`,
+`app/routes/twitter_account.py`, `app/auth/dependencies.py`,
+`app/scheduler.py`, `app/main.py`, `app/config/settings.py`,
+`.env.example`, `.gitignore`.
+
+---
+
 # CHANGELOG — Auditoria técnica completa da Publicação Inteligente
 
 Auditoria dos 10 pontos pedidos (prompt, preservação de regras de negócio,

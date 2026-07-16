@@ -37,6 +37,7 @@ class PostRepository(BaseRepository[Post]):
                 selectinload(Post.post_accounts).selectinload(
                     PostAccount.twitter_account
                 ),
+                selectinload(Post.media),
             )
             .order_by(Post.created_at.desc())
             .offset(offset)
@@ -55,7 +56,8 @@ class PostRepository(BaseRepository[Post]):
             .options(
                 selectinload(Post.post_accounts).selectinload(
                     PostAccount.twitter_account
-                )
+                ),
+                selectinload(Post.media),
             )
             .order_by(Post.created_at.desc())
             .offset(offset)
@@ -72,7 +74,8 @@ class PostRepository(BaseRepository[Post]):
             .options(
                 selectinload(Post.post_accounts).selectinload(
                     PostAccount.twitter_account
-                )
+                ),
+                selectinload(Post.media),
             )
             .order_by(Post.created_at.desc())
             .offset(offset)
@@ -98,7 +101,8 @@ class PostRepository(BaseRepository[Post]):
             .options(
                 selectinload(Post.post_accounts).selectinload(
                     PostAccount.twitter_account
-                )
+                ),
+                selectinload(Post.media),
             )
             .order_by(Post.created_at.desc())
             .offset(offset)

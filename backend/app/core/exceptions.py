@@ -51,6 +51,19 @@ class ForbiddenException(BaseAppException):
     default_code = "forbidden"
 
 
+class PasswordChangeRequiredException(BaseAppException):
+    """Primeiro acesso obrigatorio (ver docs/ROADMAP_PRIMEIRO_ACESSO.md):
+    levantada quando um usuario autenticado (`must_change_password=True`)
+    tenta acessar qualquer rota protegida antes de definir uma nova
+    senha. Mapeada para HTTP 428 Precondition Required (RFC 6585) --
+    distinto de 401/403 de proposito, para que o frontend saiba
+    redirecionar para a tela de troca de senha em vez de tratar como
+    sessao invalida ou acesso negado generico."""
+
+    default_message = "Troca de senha obrigatoria antes de acessar o sistema."
+    default_code = "password_change_required"
+
+
 class BadRequestException(BaseAppException):
     default_message = "Requisicao invalida."
     default_code = "bad_request"

@@ -7,11 +7,20 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app.auth.jwt import decode_access_token
-from app.core.exceptions import ForbiddenException, UnauthorizedException
+from app.core.exceptions import (
+    ForbiddenException,
+    PasswordChangeRequiredException,
+    UnauthorizedException,
+)
 from app.database.session import get_db
 from app.domain.contexts import UserContext
 from app.domain.enums import UserRole as DomainUserRole
-from app.domain.policies import ensure_admin, ensure_client, ensure_user_not_blocked
+from app.domain.policies import (
+    ensure_admin,
+    ensure_client,
+    ensure_password_change_not_required,
+    ensure_user_not_blocked,
+)
 from app.models.user import User
 from app.integrations.groq_client import GroqClient
 from app.oauth.oauth_client import XOAuthClient
@@ -24,9 +33,11 @@ from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.twitter_account_repository import TwitterAccountRepository
 from app.repositories.user_repository import UserRepository
 from app.repositories.post_account_repository import PostAccountRepository
+from app.repositories.post_media_repository import PostMediaRepository
 from app.repositories.post_repository import PostRepository
 from app.repositories.scheduled_post_repository import ScheduledPostRepository
 from app.services.ai_content_variation_service import AIContentVariationService
+from app.services.media_service import MediaService
 from app.services.post_service import PostService
 from app.services.scheduled_post_service import ScheduledPostService
 from app.services.audit_log_service import AuditLogService
@@ -51,7 +62,7 @@ def _credentials_exception(
 
 
 def get_user_service(db: Session = Depends(get_db)) -> UserService:
-    return UserService(UserRepository(db))
+    return UserService(UserRepository(db), RefreshTokenRepository(db))
 
 
 def get_auth_service(db: Session = Depends(get_db)) -> AuthService:
@@ -81,6 +92,10 @@ def get_twitter_account_service(db: Session = Depends(get_db)) -> TwitterAccount
     )
 
 
+def get_media_service(db: Session = Depends(get_db)) -> MediaService:
+    return MediaService(PostMediaRepository(db))
+
+
 def get_post_service(
     db: Session = Depends(get_db),
 ) -> PostService:
@@ -91,7 +106,8 @@ def get_post_service(
         user_repository=UserRepository(db),
         x_oauth_client=XOAuthClient(),
         subscription_service=get_subscription_service(db),
-    )   
+        post_media_repository=PostMediaRepository(db),
+    )
 
 
 def get_scheduled_post_service(
@@ -135,10 +151,14 @@ def get_audit_log_service(db: Session = Depends(get_db)) -> AuditLogService:
     return AuditLogService(AuditLogRepository(db))
 
 
-def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    user_service: UserService = Depends(get_user_service),
-) -> User:
+def _resolve_authenticated_user(token: str, user_service: UserService) -> User:
+    """Decodifica o token, carrega o usuario e garante que a CONTA nao
+    esta bloqueada. NAO verifica primeiro acesso obrigatorio (ver
+    `ensure_password_change_not_required`) -- usado tanto por
+    `get_current_user` (que adiciona essa checagem por cima) quanto por
+    `get_current_user_for_password_change` (que precisa funcionar
+    exatamente enquanto a troca de senha ainda esta pendente, pois e a
+    unica rota capaz de conclui-la)."""
     try:
         payload = decode_access_token(token)
     except UnauthorizedException as exc:
@@ -161,6 +181,43 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=exc.message,
+        ) from exc
+
+    return user
+
+
+def get_current_user_for_password_change(
+    token: str = Depends(oauth2_scheme),
+    user_service: UserService = Depends(get_user_service),
+) -> User:
+    """Usado exclusivamente por `POST /auth/change-password` (ver
+    docs/ROADMAP_PRIMEIRO_ACESSO.md). Deliberadamente NAO passa pelo
+    gate de primeiro acesso obrigatorio de `get_current_user` -- e
+    justamente o endpoint que permite conclui-lo."""
+    return _resolve_authenticated_user(token, user_service)
+
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    user_service: UserService = Depends(get_user_service),
+) -> User:
+    user = _resolve_authenticated_user(token, user_service)
+
+    # Primeiro acesso obrigatorio (ver docs/ROADMAP_PRIMEIRO_ACESSO.md):
+    # unico ponto de checagem, herdado automaticamente por toda rota
+    # que depende de `get_current_user`, `get_current_client` ou
+    # `get_current_admin` -- nenhuma rota protegida precisa de
+    # alteracao individual. Mapeado para 428 (Precondition Required)
+    # em vez de 401/403 para que o frontend saiba redirecionar para a
+    # tela de troca de senha, em vez de tratar como sessao invalida ou
+    # acesso negado generico.
+    try:
+        ensure_password_change_not_required(_to_user_context(user))
+    except PasswordChangeRequiredException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail=exc.message,
+            headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
     return user
@@ -195,4 +252,5 @@ def _to_user_context(user: User) -> UserContext:
         id=user.id,
         role=DomainUserRole(user.role.value),
         is_blocked=user.is_blocked,
+        must_change_password=user.must_change_password,
     )

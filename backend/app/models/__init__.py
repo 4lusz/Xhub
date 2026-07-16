@@ -9,6 +9,7 @@ resto da aplicacao.
 from app.models.audit_log import AuditLog
 from app.models.enums import (
     AuditAction,
+    MediaType,
     PostAccountStatus,
     PostStatus,
     SubscriptionStatus,
@@ -18,6 +19,7 @@ from app.models.oauth_session import OAuthSession
 from app.models.plan import Plan
 from app.models.post import Post
 from app.models.post_account import PostAccount
+from app.models.post_media import PostMedia
 from app.models.refresh_token import RefreshToken
 from app.models.scheduled_post import ScheduledPost
 from app.models.subscription import Subscription
@@ -31,6 +33,7 @@ __all__ = [
     "Subscription",
     "Post",
     "PostAccount",
+    "PostMedia",
     "ScheduledPost",
     "AuditLog",
     "OAuthSession",
@@ -40,4 +43,5 @@ __all__ = [
     "SubscriptionStatus",
     "UserRole",
     "AuditAction",
+    "MediaType",
 ]

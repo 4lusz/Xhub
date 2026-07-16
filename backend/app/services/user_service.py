@@ -6,10 +6,11 @@ from collections.abc import Sequence
 
 from sqlalchemy.exc import IntegrityError
 
-from app.auth.password import hash_password
+from app.auth.password import generate_temporary_password, hash_password, verify_password
 from app.core.exceptions import ConflictException, ValidationException
 from app.models.enums import UserRole
 from app.models.user import User
+from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.user_repository import UserRepository
 from app.services.base_service import BaseService, NotFoundError
 
@@ -21,9 +22,14 @@ _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class UserService(BaseService[User]):
-    def __init__(self, user_repository: UserRepository) -> None:
+    def __init__(
+        self,
+        user_repository: UserRepository,
+        refresh_token_repository: RefreshTokenRepository,
+    ) -> None:
         super().__init__(user_repository)
         self.user_repository = user_repository
+        self.refresh_token_repository = refresh_token_repository
 
     def get_user(self, user_id: uuid.UUID) -> User | None:
         return self.user_repository.get(user_id)
@@ -58,6 +64,15 @@ class UserService(BaseService[User]):
                     "email": normalized_email,
                     "password_hash": hash_password(password),
                     "role": role,
+                    # Primeiro acesso obrigatorio (ver
+                    # docs/ROADMAP_PRIMEIRO_ACESSO.md): a senha definida
+                    # aqui pelo administrador e sempre TEMPORARIA -- o
+                    # usuario e obrigado a troca-la por uma propria
+                    # antes de acessar qualquer rota protegida. Definido
+                    # explicitamente (em vez de depender apenas do
+                    # `default=True` do model) para deixar a regra de
+                    # seguranca visivel no ponto de criacao da conta.
+                    "must_change_password": True,
                 }
             )
         except IntegrityError as exc:
@@ -87,6 +102,64 @@ class UserService(BaseService[User]):
     def change_role(self, user_id: uuid.UUID, role: UserRole) -> User:
         user = self._ensure_user_exists(user_id)
         return self.user_repository.update(user, {"role": role})
+
+    def complete_first_access(self, *, user_id: uuid.UUID, new_password: str) -> User:
+        """Conclui o primeiro acesso obrigatorio (ver
+        docs/ROADMAP_PRIMEIRO_ACESSO.md): troca a senha temporaria pela
+        senha definitiva escolhida pelo usuario e libera o acesso as
+        demais rotas protegidas (`must_change_password=False`).
+
+        A senha temporaria antiga deixa de funcionar imediatamente --
+        ha uma UNICA coluna `password_hash`, sobrescrita aqui; nao
+        existe estado intermediario em que as duas senhas sejam
+        validas. Todas as demais sessoes (refresh tokens) do usuario
+        sao revogadas, forcando qualquer sessao antiga (ex.: outro
+        dispositivo ainda usando a sessao anterior) a autenticar de
+        novo com a senha nova."""
+        user = self._ensure_user_exists(user_id)
+        self._validate_password(new_password)
+
+        if verify_password(new_password, user.password_hash):
+            raise ValidationException(
+                "A nova senha deve ser diferente da senha atual."
+            )
+
+        updated_user = self.user_repository.update(
+            user,
+            {
+                "password_hash": hash_password(new_password),
+                "must_change_password": False,
+            },
+        )
+        self.refresh_token_repository.revoke_all_for_user(user_id)
+        return updated_user
+
+    def reset_password(self, user_id: uuid.UUID) -> tuple[User, str]:
+        """Redefinicao administrativa de senha (ver
+        docs/ROADMAP_PRIMEIRO_ACESSO.md): gera uma nova senha
+        TEMPORARIA aleatoria, substitui `password_hash` e marca
+        `must_change_password=True` -- o usuario volta ao fluxo de
+        primeiro acesso obrigatorio no proximo login. Todas as sessoes
+        ativas (refresh tokens) sao revogadas imediatamente, para que
+        uma sessao antiga nao continue acessando o sistema sem passar
+        pela troca de senha.
+
+        Retorna a senha em texto puro APENAS para esta chamada -- o
+        administrador precisa comunica-la ao usuario; ela nunca e
+        persistida nem logada em texto puro (so o hash, ja cifrado por
+        `hash_password`)."""
+        user = self._ensure_user_exists(user_id)
+        temporary_password = generate_temporary_password()
+
+        updated_user = self.user_repository.update(
+            user,
+            {
+                "password_hash": hash_password(temporary_password),
+                "must_change_password": True,
+            },
+        )
+        self.refresh_token_repository.revoke_all_for_user(user_id)
+        return updated_user, temporary_password
 
     def _normalize_email(self, email: str) -> str:
         normalized = email.strip().lower()

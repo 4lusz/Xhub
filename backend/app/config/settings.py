@@ -85,7 +85,17 @@ class Settings(BaseSettings):
     X_CALLBACK_URL: str = Field(
         default="http://localhost:8000/api/v1/oauth/x/callback"
     )
-    X_OAUTH_SCOPES: str = Field(default="tweet.read tweet.write users.read offline.access")
+    # `media.write` foi adicionado para permitir o upload de midia
+    # (imagem/gif/video) em nome do usuario via
+    # `POST https://api.x.com/2/media/upload` -- ver
+    # docs/ROADMAP_MEDIA.md. Contas conectadas ANTES desta mudanca nao
+    # tem esse escopo concedido e precisam ser reconectadas para
+    # publicar posts com midia (o escopo e definido no momento da
+    # autorizacao no X, nao pode ser adicionado retroativamente a um
+    # token ja emitido).
+    X_OAUTH_SCOPES: str = Field(
+        default="tweet.read tweet.write users.read offline.access media.write"
+    )
     FRONTEND_URL: str = Field(default="http://localhost:5173")
     BACKEND_URL: str = Field(default="http://localhost:8000")
 
@@ -124,6 +134,17 @@ class Settings(BaseSettings):
     INTELLIGENT_PUBLICATION_CACHE_ENABLED: bool = Field(default=True)
     INTELLIGENT_PUBLICATION_CACHE_TTL_SECONDS: int = Field(default=600)
 
+    # ------------------------------------------------------------------ #
+    # Midia (imagem/gif/video) anexada a posts -- ver
+    # docs/ROADMAP_MEDIA.md. Limites de tamanho/combinacao por tipo
+    # ficam em `app.domain.media_rules` (regra de negocio pura); aqui
+    # apenas configuracao de infraestrutura (onde gravar em disco, como
+    # falar com o endpoint de upload de midia do X).
+    # ------------------------------------------------------------------ #
+    MEDIA_STORAGE_DIR: str = Field(default="media_storage")
+    X_MEDIA_UPLOAD_CHUNK_SIZE_BYTES: int = Field(default=4 * 1024 * 1024)
+    X_MEDIA_UPLOAD_TIMEOUT_SECONDS: float = Field(default=30.0)
+    X_MEDIA_STATUS_MAX_WAIT_SECONDS: int = Field(default=90)
 
     # Compatibilidade com nomes antigos usados nas etapas iniciais.
     TWITTER_CLIENT_ID: str = Field(default="")

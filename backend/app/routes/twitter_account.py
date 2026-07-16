@@ -23,6 +23,7 @@ class TwitterAccountResponse(BaseModel):
     twitter_user_id: str
     username: str
     display_name: str
+    profile_image_url: str | None
     expires_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -35,6 +36,7 @@ def _to_twitter_account_response(account: TwitterAccount) -> TwitterAccountRespo
         twitter_user_id=account.twitter_user_id,
         username=account.username,
         display_name=account.display_name,
+        profile_image_url=account.profile_image_url,
         expires_at=account.expires_at,
         created_at=account.created_at,
         updated_at=account.updated_at,

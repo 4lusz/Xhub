@@ -12,6 +12,7 @@ from app.models.enums import PostStatus
 
 if TYPE_CHECKING:
     from app.models.post_account import PostAccount
+    from app.models.post_media import PostMedia
     from app.models.scheduled_post import ScheduledPost
     from app.models.user import User
 
@@ -36,6 +37,18 @@ class Post(TimestampMixin, Base):
     )
     scheduled_post: Mapped["ScheduledPost | None"] = relationship(
         back_populates="post", cascade="all, delete-orphan", uselist=False
+    )
+    # Midia anexada ao post (ver app.models.post_media.PostMedia) --
+    # identica para todas as contas de destino, nunca alterada pela
+    # Publicacao Inteligente. `cascade="all, delete-orphan"` remove as
+    # linhas do banco quando o Post e apagado; a limpeza dos arquivos
+    # em disco e responsabilidade explicita de `PostService.delete_post`
+    # (ver `app.core.media_storage`), pois SQLAlchemy nao sabe apagar
+    # arquivos.
+    media: Mapped[list["PostMedia"]] = relationship(
+        back_populates="post",
+        cascade="all, delete-orphan",
+        order_by="PostMedia.position",
     )
 
     def __repr__(self) -> str:

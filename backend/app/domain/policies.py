@@ -5,7 +5,11 @@ Este modulo nao acessa banco, HTTP, FastAPI, repositories ou services.
 
 from datetime import UTC, datetime
 
-from app.core.exceptions import ConflictException, ForbiddenException
+from app.core.exceptions import (
+    ConflictException,
+    ForbiddenException,
+    PasswordChangeRequiredException,
+)
 from app.domain.contexts import PlanLimits, SubscriptionContext, UserContext
 from app.domain.enums import SubscriptionStatus, UserRole
 
@@ -34,6 +38,19 @@ def ensure_user_not_blocked(user: UserContext) -> None:
     para o bloqueio de ASSINATURA (mais restrito, nao afeta login)."""
     if user.is_blocked:
         raise ForbiddenException("Usuario bloqueado.")
+
+
+def ensure_password_change_not_required(user: UserContext) -> None:
+    """Primeiro acesso obrigatorio (ver docs/ROADMAP_PRIMEIRO_ACESSO.md):
+    bloqueia qualquer rota protegida enquanto o usuario ainda nao
+    substituiu a senha temporaria (definida pelo administrador na
+    criacao da conta ou em uma redefinicao) por uma senha propria. O
+    login em si (`POST /auth/login`) e a propria rota de troca de senha
+    (`POST /auth/change-password`) NAO passam por esta checagem -- ver
+    `app.auth.dependencies.get_current_user` vs.
+    `get_current_user_for_password_change`."""
+    if user.must_change_password:
+        raise PasswordChangeRequiredException()
 
 
 def ensure_admin(user: UserContext) -> None:

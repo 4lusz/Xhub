@@ -4,6 +4,7 @@ import getpass
 
 from app.database.session import SessionLocal
 from app.models.enums import UserRole
+from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.user_repository import UserRepository
 from app.services.user_service import UserService
 
@@ -13,7 +14,7 @@ def main() -> None:
 
     try:
         user_repository = UserRepository(db)
-        user_service = UserService(user_repository)
+        user_service = UserService(user_repository, RefreshTokenRepository(db))
 
         print("\n=== Criar Administrador XHub ===\n")
 
@@ -39,6 +40,10 @@ def main() -> None:
         print("\nAdministrador criado com sucesso!")
         print(f"Nome : {name}")
         print(f"E-mail: {email}")
+        print(
+            "\nAviso: por padrao (primeiro acesso obrigatorio), sera pedido para "
+            "definir uma nova senha no primeiro login."
+        )
 
     except Exception:
         db.rollback()

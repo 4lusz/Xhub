@@ -68,6 +68,16 @@ class UserResponse(BaseModel):
     email: str
     role: UserRole
     is_blocked: bool
+    must_change_password: bool
+
+
+class ResetPasswordResponse(BaseModel):
+    user: UserResponse
+    # Exibida em texto puro APENAS nesta resposta -- nunca persistida
+    # nem logada (ver docs/ROADMAP_PRIMEIRO_ACESSO.md e
+    # `UserService.reset_password`). O administrador deve comunica-la
+    # ao usuario imediatamente; ela nao pode ser recuperada depois.
+    temporary_password: str
 
 
 class PlanResponse(BaseModel):
@@ -173,6 +183,7 @@ def _to_user_response(user: User) -> UserResponse:
         email=user.email,
         role=user.role,
         is_blocked=user.is_blocked,
+        must_change_password=user.must_change_password,
     )
 
 
@@ -534,6 +545,49 @@ def change_role(
         _raise_http_error(exc)
 
     return _to_user_response(user)
+
+
+@router.post(
+    "/users/{user_id}/reset-password",
+    response_model=ResetPasswordResponse,
+)
+def reset_user_password(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+    user_service: UserService = Depends(get_user_service),
+    audit_log_service: AuditLogService = Depends(get_audit_log_service),
+) -> ResetPasswordResponse:
+    """Redefinicao administrativa de senha (ver
+    docs/ROADMAP_PRIMEIRO_ACESSO.md): gera uma nova senha temporaria
+    aleatoria para o usuario, invalida a senha anterior e o devolve ao
+    fluxo de primeiro acesso obrigatorio (`must_change_password=True`)
+    no proximo login. O administrador nunca ve a senha atual do
+    usuario -- apenas esta nova senha temporaria, retornada uma unica
+    vez nesta resposta."""
+    try:
+        user, temporary_password = user_service.reset_password(user_id)
+
+        audit_log_service.record(
+            action=AuditAction.USER_PASSWORD_RESET,
+            actor_user_id=current_admin.id,
+            target_type="user",
+            target_id=user.id,
+            description="Senha temporaria gerada pelo administrador.",
+            # A senha temporaria NUNCA entra em details/logs -- apenas
+            # o fato de que a redefinicao ocorreu.
+        )
+
+        db.commit()
+
+    except BaseAppException as exc:
+        db.rollback()
+        _raise_http_error(exc)
+
+    return ResetPasswordResponse(
+        user=_to_user_response(user),
+        temporary_password=temporary_password,
+    )
 
     # ==========================================
 

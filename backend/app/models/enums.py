@@ -68,3 +68,13 @@ class AuditAction(str, enum.Enum):
     OTHER = "other"
     USER_CREATED = "user_created"
     PLAN_UPDATED = "plan_updated"
+    USER_PASSWORD_RESET = "user_password_reset"
+
+
+class MediaType(str, enum.Enum):
+    """Categoria de midia anexada a um Post (ver
+    `app.domain.media_rules` e `app.models.post_media.PostMedia`)."""
+
+    IMAGE = "image"
+    GIF = "gif"
+    VIDEO = "video"

@@ -11,7 +11,9 @@ from app.models.enums import (
     PostStatus,
 )
 from app.models.post import Post
+from app.models.post_media import PostMedia
 from app.repositories.post_account_repository import PostAccountRepository
+from app.repositories.post_media_repository import PostMediaRepository
 from app.repositories.post_repository import PostRepository
 from app.repositories.twitter_account_repository import TwitterAccountRepository
 from app.repositories.user_repository import UserRepository
@@ -21,9 +23,15 @@ from app.services.base_service import (
     NotFoundError,
     ValidationError,
 )
+from app.core import media_storage
 from app.core.crypto import decrypt_token, encrypt_token
-from app.core.exceptions import BaseAppException
+from app.core.exceptions import BaseAppException, ConflictException
 from app.domain.content_invariants import has_duplicates, preserves_invariants
+from app.domain.media_rules import (
+    MAX_MEDIA_PER_POST,
+    validate_media_combination,
+    x_media_category_for,
+)
 from app.domain.policies import MANDATORY_VARIATION_ACCOUNT_THRESHOLD
 
 logger = get_logger(__name__)
@@ -38,6 +46,7 @@ class PostService(BaseService[Post]):
         user_repository: UserRepository,
         x_oauth_client: XOAuthClient,
         subscription_service: SubscriptionService,
+        post_media_repository: PostMediaRepository,
     ) -> None:
         super().__init__(post_repository)
         self.post_repository = post_repository
@@ -46,6 +55,7 @@ class PostService(BaseService[Post]):
         self.user_repository = user_repository
         self.x_oauth_client = x_oauth_client
         self.subscription_service = subscription_service
+        self.post_media_repository = post_media_repository
         # Mesma sessao usada pelos repositories acima (todos compartilham
         # a sessao vinda de `get_db`/`SessionLocal`). Guardada aqui para
         # que `publish_post` possa commitar imediatamente apos cada
@@ -103,6 +113,14 @@ class PostService(BaseService[Post]):
             message="Post nao encontrado.",
         )
 
+        # A linha de PostMedia e removida em cascata pelo banco (ver
+        # `Post.media`, cascade="all, delete-orphan" + FK ON DELETE
+        # CASCADE), mas o arquivo em disco precisa ser apagado
+        # explicitamente ANTES -- SQLAlchemy/Postgres nao sabem tocar o
+        # filesystem.
+        for media_item in self.post_media_repository.list_by_post(post_id):
+            media_storage.delete_file(media_item.storage_path)
+
         self.post_repository.delete(post)
 
     def create_post(
@@ -112,6 +130,7 @@ class PostService(BaseService[Post]):
         text: str,
         twitter_account_ids: Sequence[uuid.UUID],
         rendered_texts: Mapping[uuid.UUID, str] | None = None,
+        media_ids: Sequence[uuid.UUID] | None = None,
     ) -> Post:
         """Cria um `Post` com o texto original e um `PostAccount` por
         conta selecionada.
@@ -124,6 +143,12 @@ class PostService(BaseService[Post]):
         `publish_post` usa `Post.text` -- comportamento identico ao
         anterior a esta funcionalidade, preservando compatibilidade
         total com clientes existentes.
+
+        `media_ids` (midia -- ver docs/ROADMAP_MEDIA.md): ids opcionais
+        de `PostMedia` ja enviados via `POST /media/upload` (ainda sem
+        `post_id`), na ordem em que devem ser publicados. A midia e
+        IDENTICA para todas as contas do post -- nunca variada pela
+        Publicacao Inteligente, que so atua sobre o texto.
         """
         self._ensure_user_exists(user_id)
 
@@ -146,6 +171,8 @@ class PostService(BaseService[Post]):
 
             if account.user_id != user_id:
                 raise NotFoundError("Conta do X nao pertence ao usuario.")
+
+        media_items = self._validate_and_load_media(user_id=user_id, media_ids=media_ids)
 
         self._validate_rendered_texts(
             text=text,
@@ -188,7 +215,55 @@ class PostService(BaseService[Post]):
                 }
             )
 
+        for position, media_item in enumerate(media_items):
+            self.post_media_repository.attach_to_post(
+                media_item, post_id=post.id, position=position
+            )
+
         return post
+
+    def _validate_and_load_media(
+        self,
+        *,
+        user_id: uuid.UUID,
+        media_ids: Sequence[uuid.UUID] | None,
+    ) -> list[PostMedia]:
+        """Valida `media_ids` (ver docs/ROADMAP_MEDIA.md) ANTES de criar
+        o `Post`: cada midia deve pertencer ao usuario, ainda nao estar
+        anexada a nenhum outro post, e a combinacao de tipos deve
+        respeitar as regras oficiais do X (ex.: video nao pode ser
+        combinado com outras midias). Retorna os `PostMedia` na MESMA
+        ordem recebida -- essa ordem vira `position` no attach."""
+        if not media_ids:
+            return []
+
+        if len(media_ids) > MAX_MEDIA_PER_POST:
+            raise ValidationError(
+                f"Um post pode ter no maximo {MAX_MEDIA_PER_POST} arquivos de midia."
+            )
+
+        if len(set(media_ids)) != len(media_ids):
+            raise ValidationError("media_ids nao pode conter ids duplicados.")
+
+        found = self.post_media_repository.list_by_ids_and_user(media_ids, user_id)
+        found_by_id = {media.id: media for media in found}
+
+        missing = [media_id for media_id in media_ids if media_id not in found_by_id]
+        if missing:
+            raise NotFoundError(
+                "Uma ou mais midias nao foram encontradas, nao pertencem "
+                "ao usuario ou ja foram anexadas a outro post."
+            )
+
+        media_items = [found_by_id[media_id] for media_id in media_ids]
+
+        combination_error = validate_media_combination(
+            [media.media_type.value for media in media_items]
+        )
+        if combination_error:
+            raise ValidationError(combination_error)
+
+        return media_items
 
     def _validate_rendered_texts(
         self,
@@ -396,9 +471,30 @@ class PostService(BaseService[Post]):
                     # identico ao anterior a esta funcionalidade.
                     text_to_publish = post_account.rendered_text or post.text
 
+                    # Midia (ver docs/ROADMAP_MEDIA.md): IDENTICA para
+                    # todas as contas -- mas cada conta do X tem seu
+                    # proprio access_token/biblioteca de midia, entao o
+                    # mesmo arquivo local precisa ser enviado ao X uma
+                    # vez POR CONTA, imediatamente antes de criar o
+                    # tweet desta conta. Falha no upload de midia cai
+                    # nos mesmos handlers de excecao abaixo (marca este
+                    # PostAccount como FAILED, nunca publica o texto sem
+                    # a midia esperada).
+                    x_media_ids = [
+                        self.x_oauth_client.upload_media(
+                            access_token=access_token,
+                            file_path=media_storage.resolve_path(media_item.storage_path),
+                            content_type=media_item.content_type,
+                            media_category=x_media_category_for(media_item.media_type.value),
+                            total_bytes=media_item.file_size_bytes,
+                        )
+                        for media_item in post.media
+                    ]
+
                     published_post = self.x_oauth_client.publish_post(
                         access_token=access_token,
                         text=text_to_publish,
+                        media_ids=x_media_ids or None,
                     )
 
                     # O tweet ja existe de verdade no X neste ponto --

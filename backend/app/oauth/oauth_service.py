@@ -84,6 +84,7 @@ class XOAuthService:
             access_token=tokens.access_token,
             refresh_token=tokens.refresh_token,
             expires_at=tokens.expires_at,
+            profile_image_url=profile.profile_image_url,
         )
 
     def _consume_session(self, state: str) -> OAuthSession:
