@@ -48,26 +48,33 @@ logger = get_logger(__name__)
 _scheduler: BackgroundScheduler | None = None
 
 
-def _claim_due_post_ids() -> list:
-    """Reivindica (em uma transacao curta, commitada imediatamente) os
-    agendamentos vencidos e retorna os `post_id` correspondentes."""
+def _claim_due_post_ids() -> tuple:
+    """Reivindica os agendamentos vencidos em uma transacao aberta e
+    retorna os `ScheduledPost` correspondentes.
+
+    A transacao apenas e commitada depois que o worker termina de
+    processar os posts agendados, preservando o lock ate que a
+    operacao externa de publicacao seja concluida.
+    """
     db = SessionLocal()
     try:
         scheduled_post_service = ScheduledPostService(
             ScheduledPostRepository(db),
             PostRepository(db),
         )
-        claimed = scheduled_post_service.claim_due(
+        claimed_schedules = scheduled_post_service.claim_due(
             datetime.now(UTC), limit=settings.SCHEDULER_BATCH_SIZE
         )
-        db.commit()
-        return claimed
+        if not claimed_schedules:
+            db.commit()
+            db.close()
+            return None, []
+        return db, claimed_schedules
     except Exception:
         db.rollback()
         logger.exception("Falha ao reivindicar agendamentos vencidos.")
-        return []
-    finally:
         db.close()
+        return None, []
 
 
 def _publish_claimed_post(post_id) -> None:
@@ -93,11 +100,6 @@ def _publish_claimed_post(post_id) -> None:
             extra={"post_id": str(post_id)},
         )
     except Exception:
-        # `publish_post` ja trata e loga falhas por conta individual
-        # internamente; qualquer excecao que escape ate aqui e algo
-        # inesperado (ex.: post nao encontrado, erro de banco). Registra
-        # o erro no proprio agendamento para visibilidade administrativa
-        # e nao interrompe o processamento dos demais posts vencidos.
         logger.exception(
             "Falha inesperada ao processar post agendado.",
             extra={"post_id": str(post_id)},
@@ -124,18 +126,30 @@ def _publish_claimed_post(post_id) -> None:
 
 def process_due_scheduled_posts() -> None:
     """Job executado periodicamente pelo `BackgroundScheduler`."""
-    claimed_post_ids = _claim_due_post_ids()
+    claim_db, claimed_schedules = _claim_due_post_ids()
 
-    if not claimed_post_ids:
+    if not claimed_schedules:
         return
 
     logger.info(
         "Processando agendamentos vencidos.",
-        extra={"count": len(claimed_post_ids)},
+        extra={"count": len(claimed_schedules)},
     )
 
-    for post_id in claimed_post_ids:
-        _publish_claimed_post(post_id)
+    try:
+        for scheduled_post in claimed_schedules:
+            _publish_claimed_post(scheduled_post.post_id)
+            scheduled_post.executed = True
+            scheduled_post.attempts += 1
+        claim_db.commit()
+    except Exception:
+        claim_db.rollback()
+        logger.exception(
+            "Falha ao atualizar estado do agendamento apos processamento."
+        )
+    finally:
+        if claim_db is not None:
+            claim_db.close()
 
 
 def start_scheduler() -> BackgroundScheduler | None:

@@ -16,12 +16,13 @@ from app.core.exceptions import (
     BaseAppException,
     ConflictException,
     NotFoundException,
+    ServiceUnavailableException,
     UnauthorizedException,
     ForbiddenException,
     ValidationException,
 )
 from app.database.session import get_db
-from app.models.enums import PostStatus
+from app.models.enums import PostAccountStatus, PostStatus
 from app.models.post import Post
 from app.models.scheduled_post import ScheduledPost
 from app.models.user import User
@@ -42,6 +43,28 @@ class CreatePostRequest(BaseModel):
     twitter_account_ids: list[uuid.UUID] = Field(
         min_length=1,
     )
+    # Publicacao Inteligente (ver
+    # docs/ROADMAP_PUBLICACAO_INTELIGENTE.md): texto final por conta,
+    # aprovado apos `POST /intelligent-publication/preview` (variacao
+    # gerada por IA e/ou editada manualmente). Chave = twitter_account_id
+    # (string, mesmo formato de `twitter_account_ids`). Opcional -- sem
+    # este campo, o comportamento e identico ao anterior a esta
+    # funcionalidade (publica sempre o texto original em todas as
+    # contas).
+    rendered_texts: dict[uuid.UUID, str] | None = Field(default=None)
+
+
+class PostAccountResponse(BaseModel):
+    twitter_account_id: str
+    username: str
+    status: PostAccountStatus
+    # error_message NAO e exposto aqui de proposito: desde que
+    # `XOAuthClient.publish_post` passou a preservar o motivo original
+    # retornado pela API do X (status HTTP + corpo da resposta), esse
+    # texto virou tecnico demais para o cliente final -- fica disponivel
+    # apenas para o administrador, via `GET /admin/posts`
+    # (`AdminPostAccountResponse`), para auditoria e suporte.
+    x_post_id: str | None
 
 
 class PostResponse(BaseModel):
@@ -51,6 +74,7 @@ class PostResponse(BaseModel):
     status: PostStatus
     created_at: datetime
     updated_at: datetime
+    accounts: list[PostAccountResponse] = Field(default_factory=list)
 
 
 class SchedulePostRequest(BaseModel):
@@ -66,6 +90,15 @@ class ScheduledPostResponse(BaseModel):
     last_error: str | None
 
 
+def _to_post_account_response(post_account) -> PostAccountResponse:
+    return PostAccountResponse(
+        twitter_account_id=str(post_account.twitter_account_id),
+        username=post_account.twitter_account.username,
+        status=post_account.status,
+        x_post_id=post_account.x_post_id,
+    )
+
+
 def _to_post_response(post: Post) -> PostResponse:
     return PostResponse(
         id=str(post.id),
@@ -74,6 +107,7 @@ def _to_post_response(post: Post) -> PostResponse:
         status=post.status,
         created_at=post.created_at,
         updated_at=post.updated_at,
+        accounts=[_to_post_account_response(account) for account in post.post_accounts],
     )
 
 
@@ -101,6 +135,8 @@ def _raise_http_error(exc: BaseAppException) -> None:
         status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
     elif isinstance(exc, NotFoundException):
         status_code = status.HTTP_404_NOT_FOUND
+    elif isinstance(exc, ServiceUnavailableException):
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
 
@@ -127,6 +163,7 @@ def create_post(
             user_id=current_user.id,
             text=request.text,
             twitter_account_ids=request.twitter_account_ids,
+            rendered_texts=request.rendered_texts,
         )
 
         db.commit()
@@ -247,6 +284,30 @@ def schedule_post(
 
     except BaseAppException as exc:
         db.rollback()
+        _raise_http_error(exc)
+
+
+@router.get(
+    "/{post_id}/schedule",
+    response_model=ScheduledPostResponse,
+)
+def get_scheduled_post(
+    post_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    post_service: PostService = Depends(get_post_service),
+    scheduled_post_service: ScheduledPostService = Depends(get_scheduled_post_service),
+) -> ScheduledPostResponse:
+    try:
+        post = post_service.get_post(post_id)
+        if post.user_id != current_user.id:
+            raise ForbiddenException("Voce nao possui acesso a este post.")
+
+        scheduled_post = scheduled_post_service.get_by_post(post_id)
+        if scheduled_post is None:
+            raise NotFoundException("Agendamento nao encontrado.")
+
+        return _to_scheduled_post_response(scheduled_post)
+    except BaseAppException as exc:
         _raise_http_error(exc)
 
 

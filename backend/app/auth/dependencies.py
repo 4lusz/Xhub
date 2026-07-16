@@ -13,6 +13,7 @@ from app.domain.contexts import UserContext
 from app.domain.enums import UserRole as DomainUserRole
 from app.domain.policies import ensure_admin, ensure_client, ensure_user_not_blocked
 from app.models.user import User
+from app.integrations.groq_client import GroqClient
 from app.oauth.oauth_client import XOAuthClient
 from app.oauth.oauth_service import XOAuthService
 from app.repositories.audit_log_repository import AuditLogRepository
@@ -25,6 +26,7 @@ from app.repositories.user_repository import UserRepository
 from app.repositories.post_account_repository import PostAccountRepository
 from app.repositories.post_repository import PostRepository
 from app.repositories.scheduled_post_repository import ScheduledPostRepository
+from app.services.ai_content_variation_service import AIContentVariationService
 from app.services.post_service import PostService
 from app.services.scheduled_post_service import ScheduledPostService
 from app.services.audit_log_service import AuditLogService
@@ -98,6 +100,15 @@ def get_scheduled_post_service(
     return ScheduledPostService(
         ScheduledPostRepository(db),
         PostRepository(db),
+    )
+
+
+def get_ai_content_variation_service(
+    db: Session = Depends(get_db),
+) -> AIContentVariationService:
+    return AIContentVariationService(
+        GroqClient(),
+        TwitterAccountRepository(db),
     )
 
 

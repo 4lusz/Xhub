@@ -183,6 +183,9 @@ class SubscriptionService(BaseService[Subscription]):
     def get_available_posts(self, subscription: Subscription) -> int:
         return get_available_posts(self.to_domain_context(subscription))
 
+    def count_by_status(self, status: SubscriptionStatus) -> int:
+        return self.subscription_repository.count_by_status(status)
+
     def ensure_can_connect_account(
         self,
         user_id: uuid.UUID,

@@ -1,7 +1,7 @@
 """Service de posts."""
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 from app.core.logging_config import get_logger
@@ -23,6 +23,8 @@ from app.services.base_service import (
 )
 from app.core.crypto import decrypt_token, encrypt_token
 from app.core.exceptions import BaseAppException
+from app.domain.content_invariants import has_duplicates, preserves_invariants
+from app.domain.policies import MANDATORY_VARIATION_ACCOUNT_THRESHOLD
 
 logger = get_logger(__name__)
 
@@ -50,6 +52,17 @@ class PostService(BaseService[Post]):
         # efeito externo bem-sucedido -- ver docstring de `publish_post`.
         self.db = post_repository.db
 
+    def list_all_posts(
+        self,
+        *,
+        status: PostStatus | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> Sequence[Post]:
+        """Posts de todos os usuarios (visao administrativa) -- ver
+        `GET /admin/posts`. Nao filtra por dono de proposito."""
+        return self.post_repository.list_all(status=status, offset=offset, limit=limit)
+
     def list_user_posts(
         self, user_id: uuid.UUID, *, offset: int = 0, limit: int = 100
     ) -> Sequence[Post]:
@@ -68,6 +81,9 @@ class PostService(BaseService[Post]):
         return self.post_repository.list_by_user_and_status(
             user_id, status, offset=offset, limit=limit
         )
+
+    def count_by_status(self, status: PostStatus) -> int:
+        return self.post_repository.count_by_status(status)
 
     def get_post(
         self,
@@ -95,7 +111,20 @@ class PostService(BaseService[Post]):
         user_id: uuid.UUID,
         text: str,
         twitter_account_ids: Sequence[uuid.UUID],
+        rendered_texts: Mapping[uuid.UUID, str] | None = None,
     ) -> Post:
+        """Cria um `Post` com o texto original e um `PostAccount` por
+        conta selecionada.
+
+        `rendered_texts` (Publicacao Inteligente -- ver
+        docs/ROADMAP_PUBLICACAO_INTELIGENTE.md): mapa opcional de
+        `twitter_account_id -> texto final aprovado` (gerado por IA
+        e/ou editado manualmente pelo usuario apos o preview). Quando
+        ausente, `PostAccount.rendered_text` fica `NULL` e
+        `publish_post` usa `Post.text` -- comportamento identico ao
+        anterior a esta funcionalidade, preservando compatibilidade
+        total com clientes existentes.
+        """
         self._ensure_user_exists(user_id)
 
         if not text.strip():
@@ -103,6 +132,11 @@ class PostService(BaseService[Post]):
 
         if not twitter_account_ids:
             raise ValidationError("Selecione ao menos uma conta do X.")
+
+        if len(set(twitter_account_ids)) != len(twitter_account_ids):
+            raise ValidationError(
+                "twitter_account_ids nao pode conter ids duplicados."
+            )
 
         for account_id in twitter_account_ids:
             account = self.twitter_account_repository.get(account_id)
@@ -113,6 +147,25 @@ class PostService(BaseService[Post]):
             if account.user_id != user_id:
                 raise NotFoundError("Conta do X nao pertence ao usuario.")
 
+        self._validate_rendered_texts(
+            text=text,
+            twitter_account_ids=twitter_account_ids,
+            rendered_texts=rendered_texts,
+        )
+
+        if rendered_texts:
+            variation_count = sum(
+                1 for account_id in twitter_account_ids if rendered_texts.get(account_id)
+            )
+            logger.info(
+                "Post confirmado com textos finais da Publicacao "
+                "Inteligente (conteudo omitido do log).",
+                extra={
+                    "account_count": len(twitter_account_ids),
+                    "accounts_with_final_text": variation_count,
+                },
+            )
+
         post = self.post_repository.create(
             {
                 "user_id": user_id,
@@ -122,14 +175,92 @@ class PostService(BaseService[Post]):
         )
 
         for account_id in twitter_account_ids:
+            rendered_text = (
+                rendered_texts.get(account_id) if rendered_texts else None
+            )
             self.post_account_repository.create(
                 {
                     "post_id": post.id,
                     "twitter_account_id": account_id,
+                    "rendered_text": (
+                        rendered_text.strip() if rendered_text else None
+                    ),
                 }
             )
 
         return post
+
+    def _validate_rendered_texts(
+        self,
+        *,
+        text: str,
+        twitter_account_ids: Sequence[uuid.UUID],
+        rendered_texts: Mapping[uuid.UUID, str] | None,
+    ) -> None:
+        """Publicacao Inteligente -- valida os textos finais por conta
+        antes de criar o `Post`.
+
+        Regras oficiais aplicadas aqui (ver roadmap):
+        - Nenhum texto final pode ser vazio ou exceder o limite de
+          caracteres do post.
+        - Edicao manual/variacao nunca pode alterar URLs, hashtags,
+          @mencoes ou emojis presentes no texto original (elementos
+          imutaveis).
+        - Com 5 ou mais contas selecionadas, a geracao de variacoes e
+          OBRIGATORIA: todas as contas devem ter um `rendered_text`
+          valido e distinto entre si -- nunca o mesmo texto publicado
+          em varias contas. Sem isso, a criacao do post e recusada
+          ANTES de qualquer chamada ao X.
+        """
+        if rendered_texts:
+            unknown_ids = set(rendered_texts.keys()) - set(twitter_account_ids)
+            if unknown_ids:
+                raise ValidationError(
+                    "rendered_texts contem contas que nao fazem parte "
+                    "de twitter_account_ids."
+                )
+
+            for account_id, rendered_text in rendered_texts.items():
+                if not rendered_text or not rendered_text.strip():
+                    raise ValidationError(
+                        "O texto final de cada conta nao pode estar vazio."
+                    )
+
+                if len(rendered_text) > 280:
+                    raise ValidationError(
+                        "O texto final de uma das contas excede o limite "
+                        "de 280 caracteres."
+                    )
+
+                if not preserves_invariants(text, rendered_text):
+                    raise ValidationError(
+                        "O texto final de uma das contas altera links, "
+                        "hashtags, @mencoes ou emojis do texto original, "
+                        "o que nao e permitido."
+                    )
+
+        if len(twitter_account_ids) >= MANDATORY_VARIATION_ACCOUNT_THRESHOLD:
+            provided = rendered_texts or {}
+
+            missing = [
+                account_id
+                for account_id in twitter_account_ids
+                if not provided.get(account_id)
+            ]
+            if missing:
+                raise ValidationError(
+                    "Com 5 ou mais contas selecionadas, a Publicacao "
+                    "Inteligente e obrigatoria: gere e revise as "
+                    "variacoes antes de criar o post."
+                )
+
+            final_texts = [provided[account_id] for account_id in twitter_account_ids]
+            if has_duplicates(final_texts):
+                raise ValidationError(
+                    "Com 5 ou mais contas selecionadas, o mesmo texto nao "
+                    "pode ser publicado em mais de uma conta. Gere "
+                    "variacoes validas antes de continuar."
+                )
 
     def publish_post(self, post_id: uuid.UUID) -> Post:
         """Publica um post em todas as contas do X vinculadas a ele.
@@ -173,15 +304,65 @@ class PostService(BaseService[Post]):
 
         post_accounts = self.post_account_repository.list_by_post(post_id)
 
-        # Idempotencia: contas ja publicadas com sucesso nunca sao
-        # reprocessadas. Apenas PENDING/FAILED sao (re)tentadas.
-        accounts_to_publish = [
-            post_account
-            for post_account in post_accounts
-            if post_account.status != PostAccountStatus.PUBLISHED
-        ]
+        accounts_to_publish = self.post_account_repository.list_pending_or_failed_by_post_for_update_skip_locked(
+            post_id
+        )
+
+        if not accounts_to_publish:
+            if any(
+                post_account.status != PostAccountStatus.PUBLISHED
+                for post_account in post_accounts
+            ):
+                raise ConflictException(
+                    "Post ja esta sendo publicado por outra requisicao."
+                )
+
+            post = self.post_repository.update(
+                post,
+                {
+                    "status": PostStatus.PUBLISHED
+                    if not any(
+                        account.status == PostAccountStatus.FAILED
+                        for account in post_accounts
+                    )
+                    else PostStatus.FAILED
+                },
+            )
+            self.db.commit()
+            return post
 
         if accounts_to_publish:
+            # Publicacao Inteligente -- defesa em profundidade (ver
+            # docs/ROADMAP_PUBLICACAO_INTELIGENTE.md, fluxo de
+            # publicacao: "valida regra obrigatoria de 5+ contas antes
+            # do envio ao X"). `PostService.create_post` ja recusa
+            # criar um post de 5+ contas sem variacoes validas e
+            # distintas, mas esta checagem re-valida o estado
+            # persistido no banco imediatamente antes de qualquer
+            # chamada externa -- protege contra edicoes diretas no
+            # banco, dados de uma versao anterior da aplicacao, ou
+            # qualquer outro caminho que tenha contornado a validacao
+            # de criacao. Nunca publica o mesmo texto em 2+ das contas
+            # sendo enviadas nesta chamada quando a regra se aplica.
+            if len(post_accounts) >= MANDATORY_VARIATION_ACCOUNT_THRESHOLD:
+                all_effective_texts = [
+                    post_account.rendered_text or post.text
+                    for post_account in post_accounts
+                ]
+                pending_effective_texts = [
+                    post_account.rendered_text or post.text
+                    for post_account in accounts_to_publish
+                ]
+                if any(
+                    not text.strip() for text in pending_effective_texts
+                ) or has_duplicates(all_effective_texts):
+                    raise ValidationError(
+                        "Este post tem 5 ou mais contas e exige variacoes "
+                        "validas e distintas por conta antes da "
+                        "publicacao. Gere as variacoes novamente antes de "
+                        "tentar publicar."
+                    )
+
             # Validacao completa de negocio ANTES de qualquer chamada
             # externa. Se a assinatura nao existir, estiver inativa ou
             # sem saldo suficiente para todas as contas pendentes,
@@ -208,9 +389,16 @@ class PostService(BaseService[Post]):
                 try:
                     access_token = self._get_valid_access_token(twitter_account)
 
+                    # Publicacao Inteligente: publica o texto final
+                    # aprovado para ESTA conta (variacao gerada por IA
+                    # ou edicao manual) quando existir; caso contrario,
+                    # o texto original do post -- comportamento
+                    # identico ao anterior a esta funcionalidade.
+                    text_to_publish = post_account.rendered_text or post.text
+
                     published_post = self.x_oauth_client.publish_post(
                         access_token=access_token,
-                        text=post.text,
+                        text=text_to_publish,
                     )
 
                     # O tweet ja existe de verdade no X neste ponto --

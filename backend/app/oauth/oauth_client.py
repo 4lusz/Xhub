@@ -12,8 +12,11 @@ from app.config.settings import settings
 from app.core.exceptions import (
     BadRequestException,
     ForbiddenException,
+    ServiceUnavailableException,
     UnauthorizedException,
 )
+
+_ERROR_DETAIL_MAX_LENGTH = 500
 
 X_AUTHORIZE_URL = "https://x.com/i/oauth2/authorize"
 X_TOKEN_URL = "https://api.x.com/2/oauth2/token"
@@ -62,6 +65,44 @@ class XOAuthClient:
         )
         return f"{X_AUTHORIZE_URL}?{query}"
 
+    def _extract_error_detail(self, response: httpx.Response) -> str:
+        """Extrai a mensagem de erro original da resposta da API do X,
+        preservando o maximo de detalhe possivel para fins de auditoria
+        (ver `PostAccount.error_message`). A API v2 do X segue o formato
+        RFC 7807 (`title`/`detail`/`type`) na maioria dos erros -- ex.:
+        `{"title": "UsageCapExceeded", "detail": "Usage cap exceeded: ..."}`
+        -- mas nunca lanca excecao por conta de um corpo inesperado:
+        sempre retorna algo utilizavel, mesmo que nao seja JSON.
+        """
+        try:
+            payload = response.json()
+        except ValueError:
+            text = response.text.strip()
+            return text[:_ERROR_DETAIL_MAX_LENGTH] if text else "sem corpo de resposta"
+
+        if isinstance(payload, dict):
+            title = payload.get("title")
+            detail = payload.get("detail")
+            if title and detail and str(title) != str(detail):
+                return f"{title}: {detail}"[:_ERROR_DETAIL_MAX_LENGTH]
+            if detail:
+                return str(detail)[:_ERROR_DETAIL_MAX_LENGTH]
+            if title:
+                return str(title)[:_ERROR_DETAIL_MAX_LENGTH]
+
+            errors = payload.get("errors")
+            if isinstance(errors, list) and errors:
+                messages = [
+                    str(item.get("message"))
+                    for item in errors
+                    if isinstance(item, dict) and item.get("message")
+                ]
+                if messages:
+                    return "; ".join(messages)[:_ERROR_DETAIL_MAX_LENGTH]
+
+        text = response.text.strip()
+        return text[:_ERROR_DETAIL_MAX_LENGTH] if text else "sem corpo de resposta"
+
     def exchange_code_for_tokens(self, *, code: str, code_verifier: str) -> XOAuthTokens:
         self._ensure_oauth_settings()
         data = {
@@ -102,11 +143,27 @@ class XOAuthClient:
         else:
             data["client_id"] = settings.X_CLIENT_ID
 
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(X_TOKEN_URL, data=data, headers=headers)
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(X_TOKEN_URL, data=data, headers=headers)
+        except httpx.TimeoutException as exc:
+            raise ServiceUnavailableException(
+                "Timeout ao renovar token de acesso do X."
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ServiceUnavailableException(
+                f"Erro de conexao ao renovar token de acesso do X: {exc}"
+            ) from exc
 
         if response.status_code >= 400:
-            raise UnauthorizedException("Falha ao renovar token de acesso do X.")
+            # Access Token expirado e o refresh tambem falhou -- preserva
+            # o motivo original do X (ver `_extract_error_detail`) em vez
+            # de uma mensagem generica, para auditoria/suporte.
+            raise UnauthorizedException(
+                f"Falha ao renovar token de acesso do X (Access Token "
+                f"expirado): {response.status_code} - "
+                f"{self._extract_error_detail(response)}"
+            )
 
         return self._parse_tokens(response.json())
     def get_authenticated_user(self, access_token: str) -> XUserProfile:
@@ -146,36 +203,57 @@ class XOAuthClient:
             "text": text.strip(),
         }
 
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(
-                X_POST_URL,
-                headers=headers,
-                json=payload,
-            )
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(
+                    X_POST_URL,
+                    headers=headers,
+                    json=payload,
+                )
+        except httpx.TimeoutException as exc:
+            raise ServiceUnavailableException(
+                "Timeout ao conectar com a API do X."
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ServiceUnavailableException(
+                f"Erro de conexao com a API do X: {exc}"
+            ) from exc
 
+        # Cada branch abaixo preserva o motivo original retornado pelo X
+        # (`_extract_error_detail`) junto do status HTTP, para que o
+        # motivo exato da falha (ex.: "UsageCapExceeded: Usage cap
+        # exceeded: Monthly product cap") fique disponivel para auditoria
+        # -- ver `PostAccount.error_message` e `PostService.publish_post`,
+        # que gravam `exc.message` sem nenhuma alteracao na logica de
+        # publicacao em si (mesmos tipos de excecao, mesmos branches).
         if response.status_code == 401:
             raise UnauthorizedException(
-                "Token de acesso invalido ou expirado."
+                f"401 Unauthorized da API do X: "
+                f"{self._extract_error_detail(response)}"
             )
 
         if response.status_code == 403:
             raise ForbiddenException(
-                "A conta nao possui permissao para publicar."
+                f"403 Forbidden da API do X: "
+                f"{self._extract_error_detail(response)}"
             )
 
         if response.status_code == 429:
-            raise BadRequestException(
-                "Limite de requisicoes da API do X atingido."
+            raise ServiceUnavailableException(
+                f"429 Too Many Requests da API do X: "
+                f"{self._extract_error_detail(response)}"
             )
 
         if response.status_code >= 500:
-            raise BadRequestException(
-                "A API do X esta indisponivel no momento."
-           )
+            raise ServiceUnavailableException(
+                f"{response.status_code} - API do X indisponivel: "
+                f"{self._extract_error_detail(response)}"
+            )
 
         if response.status_code >= 400:
             raise BadRequestException(
-                "Falha ao publicar post no X."
+                f"{response.status_code} - Falha ao publicar no X: "
+                f"{self._extract_error_detail(response)}"
             )
 
         payload = response.json()

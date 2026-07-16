@@ -1,5 +1,12 @@
 """Regras de dominio puras do XHub."""
 
+from app.domain.content_invariants import (
+    ContentInvariants,
+    extract_invariants,
+    has_duplicates,
+    is_duplicate_text,
+    preserves_invariants,
+)
 from app.domain.contexts import (
     PlanLimits,
     PlanUsage,
@@ -34,6 +41,11 @@ from app.domain.publication_cost import (
 )
 
 __all__ = [
+    "ContentInvariants",
+    "extract_invariants",
+    "has_duplicates",
+    "is_duplicate_text",
+    "preserves_invariants",
     "PlanLimits",
     "PlanUsage",
     "SubscriptionContext",

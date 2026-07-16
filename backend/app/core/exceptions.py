@@ -56,6 +56,18 @@ class BadRequestException(BaseAppException):
     default_code = "bad_request"
 
 
+class ServiceUnavailableException(BaseAppException):
+    """Falha temporaria de um servico externo (ex.: Groq indisponivel,
+    limite de requisicoes atingido). Usada quando a aplicacao precisa
+    distinguir "servico externo fora do ar agora" de um erro de
+    requisicao do proprio cliente (`BadRequestException`), para que a
+    camada de service possa decidir corretamente (ex.: interromper a
+    publicacao em vez de prosseguir com um fallback indevido)."""
+
+    default_message = "Servico externo temporariamente indisponivel."
+    default_code = "service_unavailable"
+
+
 class NotImplementedException(BaseAppException):
     """Erro para fluxos ja modelados (rota/service) mas cuja implementacao
     ainda nao foi feita nesta etapa do roadmap."""

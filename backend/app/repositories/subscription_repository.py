@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.enums import SubscriptionStatus
@@ -106,6 +106,14 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             .limit(limit)
         )
         return self.db.scalars(statement).all()
+
+    def count_by_status(self, status: SubscriptionStatus) -> int:
+        statement = (
+            select(func.count())
+            .select_from(Subscription)
+            .where(Subscription.status == status)
+        )
+        return self.db.scalar(statement) or 0
 
     def list_expiring_before(self, expires_before: datetime) -> Sequence[Subscription]:
         statement = select(Subscription).where(

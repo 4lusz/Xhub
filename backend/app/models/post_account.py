@@ -51,6 +51,19 @@ class PostAccount(TimestampMixin, Base):
         nullable=True,
     )
 
+    # Publicacao Inteligente (ver docs/ROADMAP_PUBLICACAO_INTELIGENTE.md):
+    # texto efetivamente publicado NESTA conta quando houver variacao
+    # gerada por IA ou edicao manual. `Post.text` continua sendo sempre
+    # o texto original escrito pelo usuario e nunca e sobrescrito.
+    # `NULL` para posts criados antes desta funcionalidade, ou quando a
+    # regra de negocio permite publicar o texto original (1 conta, ou
+    # 2-4 contas sem variacao aplicada) -- nesses casos,
+    # `PostService.publish_post` usa `rendered_text or post.text`.
+    rendered_text: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     post: Mapped["Post"] = relationship(back_populates="post_accounts")
     twitter_account: Mapped["TwitterAccount"] = relationship(back_populates="post_accounts")
 

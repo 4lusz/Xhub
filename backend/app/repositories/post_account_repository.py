@@ -21,6 +21,19 @@ class PostAccountRepository(BaseRepository[PostAccount]):
         statement = select(PostAccount).where(PostAccount.post_id == post_id)
         return self.db.scalars(statement).all()
 
+    def list_pending_or_failed_by_post_for_update_skip_locked(
+        self, post_id: uuid.UUID
+    ) -> Sequence[PostAccount]:
+        statement = (
+            select(PostAccount)
+            .where(
+                PostAccount.post_id == post_id,
+                PostAccount.status != PostAccountStatus.PUBLISHED,
+            )
+            .with_for_update(skip_locked=True)
+        )
+        return self.db.scalars(statement).all()
+
     def list_by_twitter_account(
         self,
         twitter_account_id: uuid.UUID,

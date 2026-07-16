@@ -17,8 +17,9 @@ from fastapi.responses import JSONResponse
 from app.config.settings import settings
 from app.core.bootstrap import sync_official_plans
 from app.core.logging_config import configure_logging, get_logger
+from app.integrations.groq_client import GroqClient
 from app.routes import admin, auth, health, oauth, twitter_account
-from app.routes import post
+from app.routes import intelligent_publication, me, post
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 from app.scheduler import shutdown_scheduler, start_scheduler
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
     # de planos disponivel) sem exigir nenhuma intervencao manual no
     # banco -- ver `app.core.bootstrap`.
     sync_official_plans()
+    GroqClient().validate_configuration()
     start_scheduler()
 
     logger.info("XHub API iniciada.", extra={"environment": settings.ENVIRONMENT})
@@ -98,10 +100,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 app.include_router(health.router, prefix=settings.API_V1_PREFIX)
 app.include_router(auth.router, prefix=settings.API_V1_PREFIX)
+app.include_router(me.router, prefix=settings.API_V1_PREFIX)
 app.include_router(oauth.router, prefix=settings.API_V1_PREFIX)
 app.include_router(twitter_account.router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin.router, prefix=settings.API_V1_PREFIX)
 app.include_router(post.router, prefix=settings.API_V1_PREFIX)
+app.include_router(intelligent_publication.router, prefix=settings.API_V1_PREFIX)
 
 
 @app.get("/")

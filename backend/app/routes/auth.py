@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 
-from app.auth.dependencies import get_auth_service
+from app.auth.dependencies import get_auth_service, get_current_user, get_user_service
 from app.core.exceptions import (
     BaseAppException,
     ConflictException,
@@ -30,7 +30,9 @@ from app.core.exceptions import (
 )
 from app.database.session import get_db
 from sqlalchemy.orm import Session
+from app.models.user import User
 from app.services.auth_service import AuthService
+from app.services.user_service import UserService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -39,6 +41,14 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+
+
+class UserResponse(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+    is_blocked: bool
 
 
 class RefreshRequest(BaseModel):
@@ -83,6 +93,26 @@ def login(
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
 
+@router.get("/me", response_model=UserResponse)
+def get_current_user_profile(
+    current_user: User = Depends(get_current_user),
+    user_service: UserService = Depends(get_user_service),
+) -> UserResponse:
+    user = user_service.get_user(current_user.id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario nao encontrado.",
+        )
+    return UserResponse(
+        id=str(user.id),
+        name=user.name,
+        email=user.email,
+        role=user.role.value if hasattr(user.role, "value") else str(user.role),
+        is_blocked=user.is_blocked,
+    )
+
+
 @router.post("/refresh", response_model=TokenResponse)
 def refresh(
     data: RefreshRequest,
@@ -93,9 +123,7 @@ def refresh(
     token ainda valido (nao expirado, nao revogado). O token usado e
     revogado e um novo e emitido (rotacao -- ver `AuthService`)."""
     try:
-        user, new_refresh_token = auth_service.rotate_refresh_token(
-            data.refresh_token
-        )
+        user, new_refresh_token = auth_service.rotate_refresh_token(data.refresh_token)
         access_token = auth_service.create_access_token(user)
         db.commit()
     except BaseAppException as exc:

@@ -106,29 +106,18 @@ class ScheduledPostService(BaseService[ScheduledPost]):
 
     def claim_due(
         self, due_at: datetime, *, limit: int = 25
-    ) -> list[uuid.UUID]:
-        """Reivindica (trava + marca `executed=True`) os agendamentos
-        cujo horario ja chegou e retorna os `post_id` correspondentes.
+    ) -> list[ScheduledPost]:
+        """Reivindica os agendamentos cujo horario ja chegou.
 
-        Deve ser chamado dentro de uma transacao que sera commitada
-        imediatamente em seguida pelo chamador (ver `app.scheduler`),
-        para liberar os locks o mais rapido possivel -- a publicacao
-        efetiva (chamada externa a API do X) NAO deve acontecer com
-        essas linhas ainda travadas.
+        Deve ser chamado dentro de uma transacao que mantem as linhas
+        travadas enquanto o worker processa os posts agendados.
+        A publicacao efetiva (chamada externa a API do X) deve ocorrer
+        apenas depois da reivindicacao, mas ainda com a transacao que
+        detem o lock aberta ate que o worker complete o processamento.
         """
-        due_rows = self.scheduled_post_repository.list_due_for_update_skip_locked(
+        return self.scheduled_post_repository.list_due_for_update_skip_locked(
             due_at, limit=limit
         )
-
-        claimed_post_ids: list[uuid.UUID] = []
-        for row in due_rows:
-            self.scheduled_post_repository.update(
-                row,
-                {"executed": True, "attempts": row.attempts + 1},
-            )
-            claimed_post_ids.append(row.post_id)
-
-        return claimed_post_ids
 
     def record_processing_error(self, post_id: uuid.UUID, error_message: str) -> None:
         """Registra, no proprio agendamento, um erro inesperado ocorrido

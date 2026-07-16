@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, get_x_oauth_service
@@ -13,6 +14,11 @@ from app.core.exceptions import BaseAppException, UnauthorizedException
 from app.database.session import get_db
 from app.models.user import User
 from app.oauth.oauth_service import XOAuthService
+
+
+class OAuthLoginResponse(BaseModel):
+    authorization_url: str
+
 
 router = APIRouter(prefix="/oauth/x", tags=["oauth"])
 
@@ -37,12 +43,12 @@ def _frontend_redirect(**params: str) -> RedirectResponse:
     return RedirectResponse(f"{settings.FRONTEND_URL}{separator}{query}")
 
 
-@router.get("/login")
+@router.get("/login", response_model=OAuthLoginResponse)
 def login_x(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     oauth_service: XOAuthService = Depends(get_x_oauth_service),
-) -> RedirectResponse:
+) -> OAuthLoginResponse:
     try:
         authorization_url = oauth_service.build_login_url(current_user.id)
         db.commit()
@@ -50,7 +56,7 @@ def login_x(
         db.rollback()
         _raise_http_error(exc)
 
-    return RedirectResponse(authorization_url)
+    return OAuthLoginResponse(authorization_url=authorization_url)
 
 
 @router.get("/callback")

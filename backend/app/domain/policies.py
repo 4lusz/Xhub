@@ -9,6 +9,24 @@ from app.core.exceptions import ConflictException, ForbiddenException
 from app.domain.contexts import PlanLimits, SubscriptionContext, UserContext
 from app.domain.enums import SubscriptionStatus, UserRole
 
+# ---------------------------------------------------------------------- #
+# Publicacao Inteligente (ver docs/ROADMAP_PUBLICACAO_INTELIGENTE.md)
+# ---------------------------------------------------------------------- #
+# Regra de negocio oficial por quantidade de contas selecionadas:
+# - 1 conta: publicar texto original, sem chamar IA.
+# - 2 a 4 contas: variacao opcional (ativada por padrao no frontend).
+# - 5+ contas: variacao obrigatoria, sem fallback automatico para o
+#   mesmo texto.
+# Constantes compartilhadas entre `PostService` (validacao na criacao
+# do post) e `AIContentVariationService` (estrategia de geracao), para
+# que as duas camadas nunca divirjam sobre o limiar.
+OPTIONAL_VARIATION_MAX_ACCOUNTS = 4
+MANDATORY_VARIATION_ACCOUNT_THRESHOLD = 5
+
+
+def is_variation_mandatory(account_count: int) -> bool:
+    return account_count >= MANDATORY_VARIATION_ACCOUNT_THRESHOLD
+
 
 def ensure_user_not_blocked(user: UserContext) -> None:
     """Bloqueio de CONTA: usuario nao pode logar nem realizar nenhuma acao,

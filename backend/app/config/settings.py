@@ -110,6 +110,20 @@ class Settings(BaseSettings):
     SCHEDULER_INTERVAL_SECONDS: int = Field(default=30)
     SCHEDULER_BATCH_SIZE: int = Field(default=25)
 
+    # ------------------------------------------------------------------ #
+    # Publicacao Inteligente -- integracao com a Groq para geracao de
+    # variacoes naturais de texto entre publicacoes (ver
+    # docs/ROADMAP_PUBLICACAO_INTELIGENTE.md). O roadmap oficial exige
+    # o uso da Groq e proibe explicitamente o uso da OpenAI para esta
+    # funcionalidade.
+    # ------------------------------------------------------------------ #
+    GROQ_API_KEY: str = Field(default="")
+    GROQ_MODEL: str = Field(default="llama-3.3-70b-versatile")
+    GROQ_TIMEOUT_SECONDS: int = Field(default=15)
+    AI_CONTENT_VARIATION_PROMPT_VERSION: str = Field(default="v1")
+    INTELLIGENT_PUBLICATION_CACHE_ENABLED: bool = Field(default=True)
+    INTELLIGENT_PUBLICATION_CACHE_TTL_SECONDS: int = Field(default=600)
+
 
     # Compatibilidade com nomes antigos usados nas etapas iniciais.
     TWITTER_CLIENT_ID: str = Field(default="")
