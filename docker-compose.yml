@@ -56,11 +56,27 @@ services:
       - "5173:5173"
     volumes:
       - ./frontend:/app
-      - /app/node_modules
+      - xhub_frontend_node_modules:/app/node_modules
     depends_on:
       backend:
         condition: service_healthy
-    command: npm run dev -- --host 0.0.0.0
+    # `npm install` roda a cada start (nao so na build da imagem) para
+    # sincronizar node_modules com o package.json/package-lock.json
+    # atuais do bind mount antes do Vite subir. Sem isso, o volume de
+    # node_modules (necessario para isolar do host -- ver comentario no
+    # `volumes:` acima) pode ficar dessincronizado do lockfile em algum
+    # ponto do historico de rebuilds e nunca mais se autocorrigir, mesmo
+    # com `--build`, causando "Failed to resolve import" para pacotes
+    # que existem no package.json mas nao nesse volume especifico.
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
 
 volumes:
   xhub_pg_data:
+  # Volume nomeado (nao anonimo) para node_modules do frontend: isola o
+  # node_modules do bind mount `./frontend:/app` (evita binarios
+  # compilados para o host vazando pro container Linux), mas com nome
+  # estavel -- diferente de um volume anonimo (`- /app/node_modules`),
+  # que gera um novo volume orfao a cada recriacao do container e nunca
+  # e limpo por `docker compose down` sem `-v`. Para forcar uma
+  # reinstalacao 100% do zero: `docker compose down -v`.
+  xhub_frontend_node_modules:

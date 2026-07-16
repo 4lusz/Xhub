@@ -1,41 +1,62 @@
-import { useHealthCheck, useDbHealthCheck } from "@/hooks/useHealthCheck";
-import { StatusCard } from "@/components/StatusCard";
+import { Navigate, Route, Routes } from "react-router-dom";
+
+import { AuthLayout } from "@/layouts/AuthLayout";
+import { DashboardLayout } from "@/layouts/DashboardLayout";
+import { AdminRoute } from "@/routes/AdminRoute";
+import { ClientOnlyRoute } from "@/routes/ClientOnlyRoute";
+import { ProtectedRoute } from "@/routes/ProtectedRoute";
+
+import { LoginPage } from "@/pages/LoginPage";
+import { FirstAccessPage } from "@/pages/FirstAccessPage";
+import { DashboardPage } from "@/pages/DashboardPage";
+import { AccountsPage } from "@/pages/AccountsPage";
+import { PostsPage } from "@/pages/PostsPage";
+import { NewPostPage } from "@/pages/NewPostPage";
+import { ScheduledPage } from "@/pages/ScheduledPage";
+import { ProfilePage } from "@/pages/ProfilePage";
+import { SettingsPage } from "@/pages/SettingsPage";
+import { AdminDashboardPage } from "@/pages/AdminDashboardPage";
+import { AdminUsersPage } from "@/pages/AdminUsersPage";
+import { AdminPlansPage } from "@/pages/AdminPlansPage";
+import { AdminAuditLogsPage } from "@/pages/AdminAuditLogsPage";
+import { AdminPostsPage } from "@/pages/AdminPostsPage";
+import { NotFoundPage } from "@/pages/NotFoundPage";
 
 function App() {
-  const api = useHealthCheck();
-  const db = useDbHealthCheck();
-
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="w-full max-w-md space-y-6">
-        <div className="space-y-1 text-center">
-          <h1 className="text-2xl font-semibold tracking-tight">XHub</h1>
-          <p className="text-sm text-neutral-500">
-            Etapa 1 &mdash; ambiente de desenvolvimento
-          </p>
-        </div>
+    <Routes>
+      <Route element={<AuthLayout />}>
+        <Route path="/login" element={<LoginPage />} />
+      </Route>
 
-        <div className="space-y-3">
-          <StatusCard
-            label="API (FastAPI)"
-            isLoading={api.isLoading}
-            isError={api.isError}
-            okText="online"
-          />
-          <StatusCard
-            label="Banco de dados (PostgreSQL)"
-            isLoading={db.isLoading}
-            isError={db.isError}
-            okText="conectado"
-          />
-        </div>
+      <Route element={<ProtectedRoute />}>
+        <Route path="/first-access" element={<FirstAccessPage />} />
 
-        <p className="text-center text-xs text-neutral-600">
-          Quando os dois status acima ficarem verdes, o ambiente esta
-          pronto para a proxima etapa.
-        </p>
-      </div>
-    </div>
+        <Route element={<DashboardLayout />}>
+          <Route element={<ClientOnlyRoute />}>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/accounts" element={<AccountsPage />} />
+            <Route path="/posts" element={<PostsPage />} />
+            <Route path="/posts/new" element={<NewPostPage />} />
+            <Route path="/scheduled" element={<ScheduledPage />} />
+          </Route>
+
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+
+          <Route element={<AdminRoute />}>
+            <Route path="/admin" element={<AdminDashboardPage />} />
+            <Route path="/admin/users" element={<AdminUsersPage />} />
+            <Route path="/admin/plans" element={<AdminPlansPage />} />
+            <Route path="/admin/audit-logs" element={<AdminAuditLogsPage />} />
+            <Route path="/admin/posts" element={<AdminPostsPage />} />
+          </Route>
+        </Route>
+      </Route>
+
+      <Route path="/404" element={<NotFoundPage />} />
+      <Route path="*" element={<Navigate to="/404" replace />} />
+    </Routes>
   );
 }
 

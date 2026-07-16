@@ -15,10 +15,18 @@ backend/.venv/
 backend/venv/
 *.pyc
 
+# Arquivos de midia enviados pelos usuarios (ver app.core.media_storage) --
+# nunca versionar conteudo de upload.
+backend/media_storage/
+
 # Frontend
 frontend/node_modules/
 frontend/dist/
 frontend/*.env
+
+# ffmpeg-core.js/.wasm regenerados a cada `npm install` (postinstall,
+# ver scripts/copy-ffmpeg-core.mjs) -- nunca versionar o binario (~32MB).
+frontend/public/ffmpeg/
 
 # Geral
 .DS_Store

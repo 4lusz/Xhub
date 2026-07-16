@@ -77,6 +77,9 @@ Models principais:
 - `Subscription`: assinatura do usuario, uso de posts e posts extras.
 - `Post`: texto original criado pelo usuario e status agregado.
 - `PostAccount`: uma linha por par `(Post, TwitterAccount)`.
+- `PostMedia`: imagem/gif/video anexado a um `Post` (ver
+  `docs/ROADMAP_MEDIA.md`) -- identico para todas as contas de
+  destino, `post_id` nullable ate ser anexado via `POST /posts`.
 - `ScheduledPost`: agendamento associado a um post.
 - `OAuthSession`: estado temporario do fluxo OAuth/PKCE.
 - `AuditLog`: trilha de auditoria administrativa.
@@ -162,6 +165,7 @@ Auth:
 
 - `POST /api/v1/auth/register`
 - `POST /api/v1/auth/login`
+- `POST /api/v1/auth/change-password` (primeiro acesso obrigatorio -- ver docs/ROADMAP_PRIMEIRO_ACESSO.md)
 
 OAuth X:
 
@@ -175,11 +179,17 @@ Contas do X:
 
 Posts:
 
-- `POST /api/v1/posts`
+- `POST /api/v1/posts` (aceita `media_ids` opcional -- ver docs/ROADMAP_MEDIA.md)
 - `GET /api/v1/posts`
 - `GET /api/v1/posts/{post_id}`
 - `POST /api/v1/posts/{post_id}/publish`
 - `DELETE /api/v1/posts/{post_id}`
+
+Midia (ver docs/ROADMAP_MEDIA.md):
+
+- `POST /api/v1/media/upload`
+- `GET /api/v1/media/{media_id}/file`
+- `DELETE /api/v1/media/{media_id}`
 
 Admin:
 
@@ -195,6 +205,9 @@ Admin:
 - Rotas nao devem conter regras de negocio.
 - A criacao administrativa de usuario exige plano e expiracao de assinatura.
 - Nao existe plano/trial implicito no fluxo administrativo atual.
+- Toda conta nova nasce com `must_change_password=True` (ver docs/ROADMAP_PRIMEIRO_ACESSO.md)
+  -- nenhuma rota protegida alem de `POST /auth/change-password` pode
+  ficar acessivel enquanto esse campo for `True`.
 
 ## Qualidade e riscos atuais
 
