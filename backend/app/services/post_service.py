@@ -33,6 +33,8 @@ from app.domain.media_rules import (
     x_media_category_for,
 )
 from app.domain.policies import MANDATORY_VARIATION_ACCOUNT_THRESHOLD
+from app.domain.publication_cost import credits_per_account_for_post
+from app.services.jitter_service import JitterService
 
 logger = get_logger(__name__)
 
@@ -47,6 +49,7 @@ class PostService(BaseService[Post]):
         x_oauth_client: XOAuthClient,
         subscription_service: SubscriptionService,
         post_media_repository: PostMediaRepository,
+        jitter_service: JitterService,
     ) -> None:
         super().__init__(post_repository)
         self.post_repository = post_repository
@@ -56,6 +59,7 @@ class PostService(BaseService[Post]):
         self.x_oauth_client = x_oauth_client
         self.subscription_service = subscription_service
         self.post_media_repository = post_media_repository
+        self.jitter_service = jitter_service
         # Mesma sessao usada pelos repositories acima (todos compartilham
         # a sessao vinda de `get_db`/`SessionLocal`). Guardada aqui para
         # que `publish_post` possa commitar imediatamente apos cada
@@ -112,6 +116,30 @@ class PostService(BaseService[Post]):
             post_id,
             message="Post nao encontrado.",
         )
+
+        # Correcao (auditoria funcional): protege a integridade do
+        # historico de publicacoes. O frontend ja escondia o botao
+        # "Excluir" para `Post.status == "published"`, mas essa e a
+        # condicao do status AGREGADO -- um post com falha PARCIAL
+        # (`Post.status == FAILED` com, por exemplo, 2 de 3 contas
+        # PUBLISHED) nao era barrado nem no frontend nem aqui no
+        # backend. `PostAccountStatus.PUBLISHED` e tratado como
+        # terminal/protegido em todo o resto do sistema (nunca
+        # reprocessado por retries -- ver `publish_post`); excluir o
+        # `Post` apagaria em cascata (`Post.post_accounts`,
+        # cascade="all, delete-orphan") o unico registro que o XHub
+        # mantem de uma publicacao que de fato aconteceu no X
+        # (`x_post_id`), mesmo o tweet continuando publicado la. Reforcado
+        # aqui -- unica fonte de verdade real, independente do que o
+        # frontend mostra ou de chamadas diretas a API.
+        if any(
+            post_account.status == PostAccountStatus.PUBLISHED
+            for post_account in self.post_account_repository.list_by_post(post_id)
+        ):
+            raise ConflictException(
+                "Este post ja foi publicado em pelo menos uma conta e nao "
+                "pode mais ser excluido."
+            )
 
         # A linha de PostMedia e removida em cascata pelo banco (ver
         # `Post.media`, cascade="all, delete-orphan" + FK ON DELETE
@@ -371,7 +399,41 @@ class PostService(BaseService[Post]):
            mesmo que o processo morra logo em seguida, o que ja foi
            commitado nao sera reprocessado, e o que ainda nao foi
            commitado nunca chegou a ter efeito externo.
+        4. Jitter (ver docs/ROADMAP_JITTER.md): entre uma publicacao e a
+           proxima (nunca antes da primeira, nunca se so houver uma
+           conta pendente), aguarda um atraso aleatorio independente
+           (`JitterService.apply_delay`) para que a sequencia de
+           chamadas a API do X pareca menos automatizada. Nao afeta
+           nenhuma das garantias acima -- e apenas um `time.sleep`
+           entre iteracoes do mesmo loop, antes de qualquer efeito
+           colateral da proxima conta (token, midia, publicacao).
+        5. Reuso de conexao HTTP (analise de escalabilidade -- ver
+           claude.md): `self.x_oauth_client` e a MESMA instancia de
+           `XOAuthClient` para todas as contas deste post, reaproveitando
+           um unico `httpx.Client`/pool de conexoes keep-alive com
+           `api.x.com` em vez de abrir uma conexao TCP/TLS nova por
+           chamada -- relevante para posts com muitas contas. Fechado no
+           `finally` abaixo, ja que esta e a ultima operacao que usa essa
+           instancia dentro desta chamada.
+        6. Custo por conta (ver docs/ROADMAP_CUSTO_LINK.md): um post cujo
+           `Post.text` contenha pelo menos um link consome
+           `LINK_CREDITS_PER_ACCOUNT` (15) creditos por conta publicada
+           com sucesso, em vez do `DEFAULT_CREDITS_PER_ACCOUNT` (1) usado
+           para qualquer outro post (texto simples ou com midia
+           anexada). Calculado uma unica vez a partir do texto original
+           (`app.domain.publication_cost.credits_per_account_for_post`)
+           e usado tanto na validacao de saldo suficiente ANTES de
+           qualquer chamada ao X quanto no consumo efetivo apos cada
+           conta publicada -- nunca um valor fixo de 1, e nunca
+           validado com um custo diferente do que sera de fato
+           consumido.
         """
+        try:
+            return self._publish_post(post_id)
+        finally:
+            self.x_oauth_client.close()
+
+    def _publish_post(self, post_id: uuid.UUID) -> Post:
         post = self.post_repository.get(post_id)
 
         if post is None:
@@ -438,17 +500,47 @@ class PostService(BaseService[Post]):
                         "tentar publicar."
                     )
 
+            # Custo por conta (ver docs/ROADMAP_CUSTO_LINK.md): posts com
+            # link no texto consomem `LINK_CREDITS_PER_ACCOUNT` (15)
+            # creditos por conta publicada; qualquer outro post (texto
+            # simples ou com midia anexada) continua consumindo 1,
+            # comportamento identico ao anterior a esta regra. A
+            # classificacao usa sempre `post.text` (o texto ORIGINAL,
+            # nunca sobrescrito) -- suficiente e correto mesmo com
+            # Publicacao Inteligente, ja que toda variacao preserva
+            # exatamente os links do original (`preserves_invariants`
+            # descarta qualquer variacao que adicione ou remova um link).
+            credits_per_account = credits_per_account_for_post(post.text)
+
             # Validacao completa de negocio ANTES de qualquer chamada
             # externa. Se a assinatura nao existir, estiver inativa ou
-            # sem saldo suficiente para todas as contas pendentes,
-            # nenhuma publicacao ocorre e a excecao sobe para a rota
-            # (que faz rollback -- nada e alterado).
+            # sem saldo suficiente para todas as contas pendentes (no
+            # custo por conta calculado acima), nenhuma publicacao
+            # ocorre e a excecao sobe para a rota (que faz rollback --
+            # nada e alterado).
             subscription = self.subscription_service.ensure_can_publish(
                 post.user_id,
-                required_posts=len(accounts_to_publish),
+                required_posts=len(accounts_to_publish) * credits_per_account,
             )
 
-            for post_account in accounts_to_publish:
+            for account_index, post_account in enumerate(accounts_to_publish):
+                # Jitter (ver docs/ROADMAP_JITTER.md): atraso aleatorio
+                # aplicado ENTRE publicacoes em contas diferentes deste
+                # post, nunca antes da primeira. So existe "entre" a
+                # partir da segunda conta do LOTE sendo publicado nesta
+                # chamada (`accounts_to_publish`, ja excluindo contas
+                # PUBLISHED anteriormente) -- se so houver uma conta
+                # pendente, `account_index` nunca passa de 0 e nenhum
+                # atraso e aplicado, satisfazendo a regra "se existir
+                # apenas uma conta: nao aplicar atraso" sem precisar de
+                # uma checagem separada de `len(accounts_to_publish)`.
+                if account_index > 0:
+                    self.jitter_service.apply_delay(
+                        post_id=post_id,
+                        account_index=account_index,
+                        total_accounts=len(accounts_to_publish),
+                    )
+
                 twitter_account = self.twitter_account_repository.get(
                     post_account.twitter_account_id
                 )
@@ -549,12 +641,16 @@ class PostService(BaseService[Post]):
 
                 try:
                     # A capacidade ja foi validada acima (para todas as
-                    # `accounts_to_publish`); o consumo efetivo por
-                    # conta publicada com sucesso mantem `used_posts`
-                    # correto mesmo se parte das contas falhar.
+                    # `accounts_to_publish`, no custo total ja
+                    # multiplicado por `credits_per_account`); o consumo
+                    # efetivo por conta publicada com sucesso mantem
+                    # `used_posts` correto mesmo se parte das contas
+                    # falhar -- cada conta bem-sucedida consome
+                    # exatamente `credits_per_account` creditos (1 ou 15,
+                    # ver calculo acima), nunca um valor fixo.
                     self.subscription_service.consume_posts(
                         subscription.id,
-                        1,
+                        credits_per_account,
                     )
                     self.db.commit()
                 except BaseAppException:

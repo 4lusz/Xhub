@@ -24,10 +24,3 @@ class SubscriptionStatus(str, enum.Enum):
     ACTIVE = "active"
     EXPIRED = "expired"
     BLOCKED = "blocked"
-
-
-class PublicationContentType(str, enum.Enum):
-    TEXT = "text"
-    IMAGE = "image"
-    VIDEO = "video"
-    LINK = "link"

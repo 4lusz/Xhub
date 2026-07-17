@@ -7,6 +7,7 @@ import {
   Menu,
   Settings,
   Shield,
+  Shuffle,
   Sparkles,
   AtSign,
   UserCircle,
@@ -49,6 +50,7 @@ const adminNav: NavItemConfig[] = [
   { to: "/admin/users", label: "Usuários", icon: Users },
   { to: "/admin/plans", label: "Planos", icon: Shield },
   { to: "/admin/posts", label: "Publicações", icon: FileText },
+  { to: "/admin/jitter", label: "Jitter", icon: Shuffle },
   { to: "/admin/audit-logs", label: "Auditoria", icon: Shield },
 ];
 

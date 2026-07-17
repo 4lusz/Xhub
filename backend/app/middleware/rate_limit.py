@@ -32,8 +32,34 @@ exigiria estado compartilhado (ex.: Redis), o que nao faz parte do
 escopo desta correcao para nao introduzir infraestrutura nova sem
 necessidade real comprovada; o memory leak e a falha de spoofing, que
 eram os problemas de severidade mais alta, estao corrigidos aqui.
+
+Correcao (auditoria de seguranca -- flood/DoS): a cobertura deste
+middleware era estrita demais (somente `/auth/login`), deixando sem
+nenhuma protecao endpoints sensiveis explicitamente exploraveis por um
+atacante autenticado com uma unica conta valida: geracao de preview da
+Publicacao Inteligente (custo real por chamada a Groq -- variar
+minimamente o texto a cada requisicao contorna o cache em memoria e
+forca uma chamada paga a cada tentativa), upload de midia (ate 512MB
+por arquivo, sem cota de armazenamento por usuario -- upload repetido
+esgota disco), login/renovacao de sessao, inicio do fluxo OAuth do X, e
+publicacao/agendamento de posts. Estendido para cobrir esses caminhos
+(estaticos e dinamicos, ver `_is_rate_limited_path`), reaproveitando
+exatamente a mesma infraestrutura (mesma janela deslizante em memoria,
+mesmas configuracoes `AUTH_RATE_LIMIT_*`) -- cada caminho continua tendo
+seu proprio orcamento independente, pois a chave ja inclui o path (ver
+`_client_key`, agora tambem com o metodo HTTP, para nao acoplar leituras
+e escritas no mesmo endpoint sob o mesmo orcamento).
+
+Endpoints deliberadamente NAO incluidos, com justificativa: `POST
+/admin/users` (criacao de usuario) exige um JWT de administrador valido
+-- inacessivel a um atacante com "acesso apenas ao frontend e a API
+publica" (fora do modelo de ameaca desta correcao); nao ha
+`POST /auth/register` (auto cadastro nunca existiu nesta aplicacao, ver
+`app.routes.auth`), entao "spam de criacao de usuarios" por um atacante
+anonimo nao se aplica.
 """
 
+import re
 from collections import defaultdict, deque
 from time import monotonic
 from typing import Deque
@@ -51,6 +77,10 @@ from app.config.settings import settings
 # clientes que fazem uma unica leva de requisicoes e nunca mais voltam.
 _CLEANUP_SWEEP_INTERVAL = 500
 
+# UUID no formato padrao (com hifens) -- unico formato aceito pelos
+# path params `uuid.UUID` do FastAPI nas rotas abaixo.
+_UUID_SEGMENT = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app) -> None:
@@ -58,14 +88,30 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._requests: dict[str, Deque[float]] = defaultdict(deque)
         self._requests_processed = 0
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        rate_limited_paths = {
-            f"{settings.API_V1_PREFIX}/auth/login",
+        prefix = settings.API_V1_PREFIX
+        # Caminhos estaticos (sem path param) -- comparados por igualdade.
+        self._static_rate_limited_paths = {
+            f"{prefix}/auth/login",
+            f"{prefix}/auth/refresh",
+            f"{prefix}/intelligent-publication/preview",
+            f"{prefix}/media/upload",
+            f"{prefix}/oauth/x/login",
         }
+        # Caminhos com path param (`{post_id}`) -- comparados por regex,
+        # ja que o valor real do UUID varia a cada requisicao.
+        self._dynamic_rate_limited_patterns = [
+            re.compile(rf"^{re.escape(prefix)}/posts/{_UUID_SEGMENT}/publish$"),
+            re.compile(rf"^{re.escape(prefix)}/posts/{_UUID_SEGMENT}/schedule$"),
+        ]
 
-        if (
-            not settings.AUTH_RATE_LIMIT_ENABLED
-            or request.url.path not in rate_limited_paths
+    def _is_rate_limited_path(self, path: str) -> bool:
+        if path in self._static_rate_limited_paths:
+            return True
+        return any(pattern.match(path) for pattern in self._dynamic_rate_limited_patterns)
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        if not settings.AUTH_RATE_LIMIT_ENABLED or not self._is_rate_limited_path(
+            request.url.path
         ):
             return await call_next(request)
 
@@ -119,4 +165,4 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             if forwarded_for:
                 host = forwarded_for.split(",", 1)[0].strip() or host
 
-        return f"{request.url.path}:{host}"
+        return f"{request.method}:{request.url.path}:{host}"

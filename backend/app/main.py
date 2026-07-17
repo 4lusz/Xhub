@@ -20,8 +20,10 @@ from app.core.logging_config import configure_logging, get_logger
 from app.integrations.groq_client import GroqClient
 from app.routes import admin, auth, health, oauth, twitter_account
 from app.routes import intelligent_publication, media, me, post
+from app.middleware.body_size_limit import BodySizeLimitMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.scheduler import shutdown_scheduler, start_scheduler
 
 configure_logging(debug=settings.DEBUG)
@@ -60,7 +62,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(RateLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Adicionado por ultimo de proposito: no Starlette, o middleware
 # adicionado por ultimo se torna o mais externo (o primeiro a executar

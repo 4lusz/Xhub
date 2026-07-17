@@ -1,5 +1,189 @@
 # Changelog
 
+## 2026-07-17 - Auditoria completa de segurança
+
+Última auditoria do projeto antes de produção — ponta a ponta,
+considerando um atacante com acesso apenas ao frontend/API pública.
+Relatório técnico completo em `docs/AUDITORIA_SEGURANCA.md`. A maior
+parte das áreas auditadas (autenticação, OAuth, autorização/IDOR, banco
+de dados, frontend, backend, Docker, scheduler, integrações externas)
+foi aprovada sem necessidade de correção. 5 vulnerabilidades reais
+encontradas e corrigidas (nenhuma Crítica):
+
+1. Ausência total de headers de segurança HTTP (`X-Frame-Options`,
+   `Content-Security-Policy`, `X-Content-Type-Options`,
+   `Referrer-Policy`, `Strict-Transport-Security`) — novo
+   `SecurityHeadersMiddleware`.
+2. Rate limiting cobria apenas `/auth/login`, deixando sem proteção
+   endpoints com custo real de abuso (geração de preview da Publicação
+   Inteligente, upload de mídia, publicação, agendamento, início de
+   OAuth) — `RateLimitMiddleware` estendido.
+3. Listas sem limite de tamanho em `twitter_account_ids`
+   (`POST /posts`, `POST /intelligent-publication/preview`) permitiam
+   DoS síncrono via lista enorme de UUIDs — `max_length` adicionado,
+   derivado do maior plano do catálogo oficial.
+4. Nenhum limite de tamanho de corpo de requisição JSON — novo
+   `BodySizeLimitMiddleware` (413 acima de 1 MiB, exceto multipart).
+5. Enumeração de e-mails cadastrados por análise de tempo de resposta
+   do login (bcrypt só era chamado quando o e-mail existia) —
+   mitigado com verificação de hash "isca" em tempo constante.
+
+Dependências: `pip-audit` encontrou 34 vulnerabilidades conhecidas em 8
+pacotes; `cryptography`, `python-jose`, `python-multipart` e
+`python-dotenv` atualizados (16 delas corrigidas). As demais foram
+avaliadas individualmente e documentadas como risco aceito (código
+vulnerável nunca exercitado pelo uso real da aplicação, ou fora da
+superfície de ataque) ou como recomendação para a próxima etapa
+(`fastapi`/`starlette`, mudança de framework de maior superfície, fora
+do escopo desta correção pontual).
+
+Validado: `pytest` sem regressão em cada rebuild da imagem, roundtrip
+real de `Fernet`/JWT nas novas versões de `cryptography`/`python-jose`,
+simulação de flood ao vivo confirmando `429` nos endpoints estendidos,
+`413`/`422` confirmados para payload/lista gigantes, `npm audit`
+(frontend) sem nenhuma vulnerabilidade conhecida.
+
+## 2026-07-17 - Custo de publicação por link (15 créditos/conta)
+
+Regra de negócio pedida explicitamente pelo usuário logo após a
+auditoria funcional (que havia identificado esta função como não
+implementada e deliberadamente fora de escopo naquela etapa — ver
+`docs/AUDITORIA_FUNCIONAL.md`). Implementada e validada nesta etapa.
+Relatório técnico completo em `docs/ROADMAP_CUSTO_LINK.md`.
+
+Regra: post cujo texto contém pelo menos um link consome **15
+créditos por conta publicada**; qualquer outro post (texto simples ou
+com mídia anexada, sem link) continua consumindo **1 crédito por
+conta**, comportamento já existente antes desta mudança. Mídia nunca
+altera o custo — só a presença de link no texto.
+
+`app/domain/publication_cost.py` (código preparatório já existente,
+nunca conectado ao fluxo real) foi reescrito para refletir a regra real
+(binária: link ou não, independente de mídia) em vez do modelo antigo
+de classificação mutuamente exclusiva TEXT/IMAGE/VIDEO/LINK, que não
+correspondia à realidade (um post pode ter mídia e link ao mesmo tempo).
+`PostService.publish_post` agora calcula o custo por conta uma única
+vez por post e usa esse valor tanto na validação de saldo suficiente
+(antes de qualquer chamada ao X) quanto no consumo efetivo por conta
+publicada com sucesso. Frontend ganhou um aviso visível no compositor
+de posts quando o texto contém um link, mostrando o custo real antes de
+publicar.
+
+Validado: `pytest` sem regressão (6/6), `tsc`/`build` limpos, e um
+script descartável confirmando detecção de link, consumo de 1 vs. 15
+créditos por conta, bloqueio de saldo insuficiente antes de qualquer
+chamada ao X, e independência do custo em relação à mídia anexada.
+
+## 2026-07-17 - Auditoria funcional completa
+
+Validação de ponta a ponta de todo o sistema (autenticação, admin,
+publicações, Publicação Inteligente, mídia, consumo/limites, scheduler,
+banco de dados, frontend, backend, escalabilidade), antes da auditoria
+de segurança final. Relatório técnico completo em
+`docs/AUDITORIA_FUNCIONAL.md`. Sete problemas reais encontrados e
+corrigidos na causa raiz (nenhuma funcionalidade nova):
+
+1. Login não bloqueava usuário bloqueado (`AuthService.authenticate`).
+2. Mensagem/status inconsistentes ao renovar sessão de usuário
+   bloqueado (`AuthService.rotate_refresh_token`).
+3. `routes/auth.py` não mapeava `ForbiddenException` para HTTP 403.
+4. Post publicado podia ser excluído, apagando o histórico real de
+   publicação (`PostService.delete_post` + `PostsPage.tsx`).
+5. Texto do diálogo de desconexão de conta do X induzia a erro sobre o
+   que acontece com o histórico de publicações (`AccountsPage.tsx`).
+6. `pytest` ausente de `backend/requirements.txt` — suíte não rodava
+   em uma imagem construída do zero.
+7. Teste `test_get_subscription_returns_subscription_for_admin`
+   desatualizado (dublê incompleto) — falhava desde uma feature
+   anterior; agora corrigido.
+
+Validado com `pytest` (6 passaram, 0 falharam — primeira vez com a
+suíte inteiramente verde), `tsc --noEmit`/`npm run build` limpos, e um
+script descartável com 40 asserções de regra de negócio (nunca tocando
+a API real do X/Groq). Itens pré-existentes conhecidos (custo
+diferenciado por tipo de conteúdo não implementado, algumas ações de
+auditoria não disparadas, publicação imediata síncrona) permanecem
+documentados e deliberadamente não alterados — corrigi-los exigiria
+implementar funcionalidade nova, fora do escopo desta auditoria.
+
+## 2026-07-16 - Atualizacao completa da documentacao oficial
+
+Auditoria completa do codigo atual (backend e frontend) seguida de reescrita
+da documentacao oficial, tratando o codigo como fonte da verdade. Nenhuma
+funcionalidade foi alterada nesta tarefa -- apenas documentacao.
+
+### Arquivos criados
+
+- `claude.md`
+  - Contexto tecnico completo do projeto para IA: objetivo, arquitetura,
+    camadas, convencoes, regras de negocio, fluxos (autenticacao, OAuth,
+    publicacao, Publicacao Inteligente, midia, scheduler, Jitter, painel
+    administrativo), entidades principais, decisoes arquiteturais e uma
+    lista explicita de dividas tecnicas/lacunas conhecidas (para nao serem
+    "redescobertas" nem corrigidas sem pedido explicito).
+
+### Arquivos reescritos
+
+- `README.md`
+  - Reescrito por completo para refletir o estado atual do XHub: todas as
+    funcionalidades implementadas (autenticacao, primeiro acesso
+    obrigatorio, painel administrativo, planos/assinaturas, OAuth do X,
+    multiplas contas, Publicacao Inteligente/Groq, upload e edicao de
+    midia, scheduler, Jitter, auditoria), stack, estrutura de pastas
+    atualizada, variaveis de ambiente e instrucoes de execucao local/Docker.
+    A versao anterior so documentava o estado do backend em 2026-07-09,
+    antes de Midia, Primeiro Acesso, Publicacao Inteligente e Jitter
+    existirem.
+
+### Arquivos atualizados
+
+- `docs/ROADMAP_PUBLICACAO_INTELIGENTE.md`
+  - **Inconsistencia corrigida**: o arquivo ainda se apresentava como
+    "especificacao oficial para implementacao futura" e listava a
+    funcionalidade inteira como nao implementada ("Nao existe cliente
+    Groq", "Nao existe endpoint de preview", etc.), mas o codigo atual ja
+    implementa e valida a funcionalidade por completo (`GroqClient`,
+    `AIContentVariationService`, `PostAccount.rendered_text`, endpoint de
+    preview, modal de edicao no frontend). Atualizado para o mesmo formato
+    de `docs/ROADMAP_MEDIA.md`/`ROADMAP_PRIMEIRO_ACESSO.md`/
+    `ROADMAP_JITTER.md`: titulo, "Estado atual relevante", nova secao
+    "Arquitetura implementada" (mapeamento arquivo a arquivo do que
+    realmente existe) e "Validacao realizada".
+- `.continue/context/XHUB_CONTEXT.md`
+  - Reescrito para refletir o estado de 2026-07-16 (estava descrevendo o
+    estado de 2026-07-09). Passa a apontar `claude.md` como fonte primaria
+    de contexto tecnico detalhado.
+- `.continue/context/ROADMAP.md`
+  - Secoes "Planejado/especificado" e "Nao implementado" moviam Publicacao
+    Inteligente, Midia, Primeiro Acesso e Jitter para fora do que ja existe
+    no codigo -- corrigido: essas quatro funcionalidades agora aparecem em
+    "Implementado conforme codigo atual"; a secao "Nao implementado" foi
+    reduzida ao que de fato ainda nao existe (custo por tipo de conteudo,
+    cache persistido, algumas acoes de auditoria nao disparadas, testes
+    automatizados mais profundos).
+
+### Inconsistencias encontradas e como foram corrigidas
+
+1. `docs/ROADMAP_PUBLICACAO_INTELIGENTE.md` descrevia a funcionalidade como
+   nao implementada; o codigo (`app/services/ai_content_variation_service.py`,
+   `app/integrations/groq_client.py`, `app/routes/intelligent_publication.py`,
+   frontend em `components/intelligent-publication/`) mostra que esta
+   completa e funcional. Corrigido reescrevendo o documento no formato
+   "especificacao + estado implementado".
+2. `.continue/context/XHUB_CONTEXT.md` e `.continue/context/ROADMAP.md`
+   descreviam um snapshot de 2026-07-09, anterior a quatro funcionalidades
+   inteiras (Midia, Primeiro Acesso, Publicacao Inteligente, Jitter).
+   Corrigido com reescrita completa de ambos.
+3. `README.md` nao mencionava nenhuma das funcionalidades acima, ainda
+   descrevia fluxo de publicacao sem Jitter/midia/variacao de texto, e a
+   estrutura de pastas nao incluia `domain/`, `integrations/`, `schemas/`
+   nem os modulos novos. Corrigido com reescrita completa.
+4. Nenhuma inconsistencia foi encontrada entre `docs/ROADMAP_MEDIA.md`,
+   `docs/ROADMAP_PRIMEIRO_ACESSO.md`, `docs/ROADMAP_JITTER.md` e o codigo
+   atual -- os tres ja estavam no formato "especificacao + estado
+   implementado" e foram usados como referencia de estilo para as demais
+   correcoes.
+
 ## 2026-07-09 - Base Continue.dev e especificacao da Publicacao Inteligente
 
 ### Arquivos criados

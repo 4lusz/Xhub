@@ -5,11 +5,23 @@ alembic==1.14.0
 psycopg[binary]==3.2.3
 pydantic==2.10.4
 pydantic-settings==2.7.0
-python-jose[cryptography]==3.3.0
-cryptography==43.0.3
+# Correcao (auditoria de seguranca -- dependencias vulneraveis): versoes
+# anteriores tinham CVEs conhecidos e corrigidos upstream sem exigir
+# mudanca de API para o uso restrito que este projeto faz de cada lib
+# (JWT HS256 simples via jose; Fernet/AES via cryptography). Bumps de
+# patch/minor dentro da mesma linha de compatibilidade, validados com a
+# suite completa + smoke test manual de login/JWT/upload apos a
+# atualizacao -- nunca a ultima versao "bleeding edge" sem necessidade.
+python-jose[cryptography]==3.4.0
+cryptography==48.0.1
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
-python-multipart==0.0.20
+python-multipart==0.0.32
 httpx==0.28.1
 apscheduler==3.10.4
-python-dotenv==1.0.1
+python-dotenv==1.2.2
+
+# Testes (backend/tests/, ver README.md/claude.md -- "docker compose exec
+# backend pytest"). Sem esta dependencia declarada, uma imagem construida
+# do zero (`docker compose up --build`) nao consegue rodar a suite.
+pytest==8.3.4

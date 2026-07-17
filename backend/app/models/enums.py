@@ -69,6 +69,7 @@ class AuditAction(str, enum.Enum):
     USER_CREATED = "user_created"
     PLAN_UPDATED = "plan_updated"
     USER_PASSWORD_RESET = "user_password_reset"
+    JITTER_SETTINGS_UPDATED = "jitter_settings_updated"
 
 
 class MediaType(str, enum.Enum):

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import (
     get_audit_log_service,
     get_current_admin,
+    get_jitter_service,
     get_plan_service,
     get_post_service,
     get_subscription_service,
@@ -31,10 +32,12 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.audit_log import AuditLog
+from app.models.jitter_settings import JitterSettings
 from app.models.plan import Plan
 from app.models.subscription import Subscription
 from app.models.user import User
 from app.services.audit_log_service import AuditLogService
+from app.services.jitter_service import JitterService
 from app.services.post_service import PostService
 from app.services.subscription_service import SubscriptionService
 from app.services.user_service import UserService
@@ -174,6 +177,23 @@ class RenewSubscriptionRequest(BaseModel):
 
 class ExtraPostsRequest(BaseModel):
     amount: int = Field(gt=0)
+
+
+class JitterSettingsResponse(BaseModel):
+    min_seconds: float
+    max_seconds: float
+
+
+class UpdateJitterSettingsRequest(BaseModel):
+    min_seconds: float = Field(ge=0)
+    max_seconds: float = Field(ge=0)
+
+
+def _to_jitter_settings_response(jitter_settings: JitterSettings) -> JitterSettingsResponse:
+    return JitterSettingsResponse(
+        min_seconds=jitter_settings.min_seconds,
+        max_seconds=jitter_settings.max_seconds,
+    )
 
 
 def _to_user_response(user: User) -> UserResponse:
@@ -873,3 +893,70 @@ def update_plan(
         _raise_http_error(exc)
 
     return _to_plan_response(plan)
+
+    # ==========================================
+
+
+# JITTER
+# ==========================================
+
+
+@router.get(
+    "/jitter-settings",
+    response_model=JitterSettingsResponse,
+)
+def get_jitter_settings(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_admin),
+    jitter_service: JitterService = Depends(get_jitter_service),
+) -> JitterSettingsResponse:
+    """Configuracao atual do Jitter (ver docs/ROADMAP_JITTER.md) --
+    atraso aleatorio aplicado entre publicacoes em contas diferentes de
+    um mesmo post. Cria a linha singleton com os valores padrao na
+    primeira leitura, se ainda nao existir (por isso o commit mesmo
+    numa rota de leitura)."""
+    jitter_settings = jitter_service.get_settings()
+    db.commit()
+    return _to_jitter_settings_response(jitter_settings)
+
+
+@router.patch(
+    "/jitter-settings",
+    response_model=JitterSettingsResponse,
+)
+def update_jitter_settings(
+    data: UpdateJitterSettingsRequest,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+    jitter_service: JitterService = Depends(get_jitter_service),
+    audit_log_service: AuditLogService = Depends(get_audit_log_service),
+) -> JitterSettingsResponse:
+    """Atualiza o intervalo min/max do Jitter. Passa a valer
+    IMEDIATAMENTE para as proximas publicacoes (a proxima chamada a
+    `JitterService.apply_delay` ja le o valor atualizado do banco) --
+    nenhuma alteracao de codigo ou reinicio da aplicacao e necessaria."""
+    try:
+        jitter_settings = jitter_service.update_settings(
+            min_seconds=data.min_seconds,
+            max_seconds=data.max_seconds,
+        )
+
+        audit_log_service.record(
+            action=AuditAction.JITTER_SETTINGS_UPDATED,
+            actor_user_id=current_admin.id,
+            target_type="jitter_settings",
+            target_id=jitter_settings.id,
+            description="Configuracao do Jitter atualizada.",
+            details={
+                "min_seconds": data.min_seconds,
+                "max_seconds": data.max_seconds,
+            },
+        )
+
+        db.commit()
+
+    except BaseAppException as exc:
+        db.rollback()
+        _raise_http_error(exc)
+
+    return _to_jitter_settings_response(jitter_settings)

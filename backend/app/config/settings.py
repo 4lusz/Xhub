@@ -133,6 +133,16 @@ class Settings(BaseSettings):
     AI_CONTENT_VARIATION_PROMPT_VERSION: str = Field(default="v1")
     INTELLIGENT_PUBLICATION_CACHE_ENABLED: bool = Field(default=True)
     INTELLIGENT_PUBLICATION_CACHE_TTL_SECONDS: int = Field(default=600)
+    # Numero maximo de variacoes pedidas a Groq em UMA UNICA chamada
+    # (analise de escalabilidade -- clientes com muitas contas
+    # conectadas, ver docs/ROADMAP_JITTER.md/claude.md). Pedir todas as
+    # variacoes de uma vez so (ex.: 100 para um post com 100 contas)
+    # arrisca estourar `GROQ_TIMEOUT_SECONDS` e degrada a diversidade
+    # das variacoes geradas. `AIContentVariationService` divide
+    # automaticamente qualquer pedido maior que este valor em multiplas
+    # chamadas sequenciais menores, sem mudar o resultado final nem o
+    # comportamento para o caso comum (ate poucas dezenas de contas).
+    AI_CONTENT_VARIATION_MAX_BATCH_SIZE: int = Field(default=20)
 
     # ------------------------------------------------------------------ #
     # Midia (imagem/gif/video) anexada a posts -- ver
@@ -145,6 +155,27 @@ class Settings(BaseSettings):
     X_MEDIA_UPLOAD_CHUNK_SIZE_BYTES: int = Field(default=4 * 1024 * 1024)
     X_MEDIA_UPLOAD_TIMEOUT_SECONDS: float = Field(default=30.0)
     X_MEDIA_STATUS_MAX_WAIT_SECONDS: int = Field(default=90)
+
+    # ------------------------------------------------------------------ #
+    # Jitter -- atraso aleatorio aplicado ENTRE publicacoes em contas
+    # diferentes de um mesmo post, para tornar a sequencia de chamadas a
+    # API do X menos automatizada (ver docs/ROADMAP_JITTER.md). Estes
+    # dois valores sao usados APENAS como seed inicial da linha unica de
+    # `jitter_settings` no banco, na primeira leitura (ver
+    # `JitterSettingsRepository.get_or_create_default`) -- depois disso,
+    # o administrador controla os valores em uso via
+    # `PATCH /admin/jitter-settings`, sem exigir mudanca de codigo nem
+    # reinicio da aplicacao.
+    # ------------------------------------------------------------------ #
+    JITTER_DEFAULT_MIN_SECONDS: float = Field(default=1.5)
+    JITTER_DEFAULT_MAX_SECONDS: float = Field(default=8.0)
+    # Teto de seguranca para o valor MAXIMO configuravel pelo
+    # administrador (validado em `JitterService.update_settings`) --
+    # evita que um valor digitado por engano (ex.: 600 em vez de 6.0)
+    # torne uma publicacao em varias contas absurdamente lenta a ponto
+    # de estourar timeout do navegador/proxy na chamada sincrona de
+    # `POST /posts/{id}/publish`.
+    JITTER_MAX_ALLOWED_SECONDS: float = Field(default=120.0)
 
     # Compatibilidade com nomes antigos usados nas etapas iniciais.
     TWITTER_CLIENT_ID: str = Field(default="")

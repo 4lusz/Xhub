@@ -424,54 +424,97 @@ class AIContentVariationService:
         *,
         exclude: tuple[str, ...] = (),
     ) -> tuple[str, ...]:
-        system_prompt = _build_system_prompt(count)
-        user_prompt = _build_user_prompt(original_text, count)
+        """Obtem ate `count` variacoes validas, em uma ou mais chamadas
+        a Groq.
 
-        result = self.groq_client.generate_variations(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            count=count,
-        )
-        self._last_model = result.model
-
-        logger.info(
-            "Resposta da Groq recebida para geracao de variacoes.",
-            extra={
-                "model": result.model,
-                "latency_ms": result.latency_ms,
-                "prompt_tokens": result.prompt_tokens,
-                "completion_tokens": result.completion_tokens,
-                "total_tokens": result.total_tokens,
-                "prompt_version": settings.AI_CONTENT_VARIATION_PROMPT_VERSION,
-            },
-        )
-
+        Correcao de escalabilidade (clientes com muitas contas
+        conectadas -- ver claude.md, secao de analise arquitetural):
+        antes desta mudanca, um post com N contas pedia as N variacoes
+        em UMA UNICA chamada a Groq (ex.: 100 variacoes de uma vez para
+        o plano Agencia). Isso e arriscado por dois motivos: (1) gerar
+        uma resposta JSON muito grande pode nao caber dentro de
+        `GROQ_TIMEOUT_SECONDS` (fixo, independente de quantas variacoes
+        foram pedidas); (2) pedir muitas variacoes distintas de um
+        texto curto em uma unica chamada degrada a diversidade real
+        entre elas (mais chance de repetir estrutura/vocabulario,
+        aumentando a taxa de descarte por duplicidade). A geracao agora
+        e dividida em lotes de no maximo
+        `settings.AI_CONTENT_VARIATION_MAX_BATCH_SIZE` variacoes por
+        chamada -- para o caso comum (poucas dezenas de contas ou
+        menos) o comportamento e identico a antes (uma unica chamada,
+        ja que `count` cabe em um lote).
+        """
         valid: list[str] = []
-        for candidate in result.variations:
-            if len(candidate) > _MAX_POST_LENGTH:
-                continue
+        batch_size = max(1, settings.AI_CONTENT_VARIATION_MAX_BATCH_SIZE)
+        # Margem de uma tentativa extra sobre o numero minimo de lotes
+        # necessario, para absorver descartes (invariantes/duplicidade)
+        # sem arriscar um numero ilimitado de chamadas a Groq caso o
+        # texto seja dificil de variar tantas vezes.
+        max_attempts = -(-count // batch_size) + 1
+        attempts = 0
 
-            # Reforco deterministico das regras do prompt (roadmap:
-            # "Mesmo que a Groq retorne uma variacao que altere URL,
-            # parametros, dominio, encurtador, hashtag, @mencao, emoji
-            # ou CTA, a resposta deve ser considerada invalida").
-            if not preserves_invariants(original_text, candidate):
-                logger.warning(
-                    "Variacao descartada: nao preserva elementos "
-                    "imutaveis do texto original."
-                )
-                continue
+        while len(valid) < count and attempts < max_attempts:
+            attempts += 1
+            batch_count = min(batch_size, count - len(valid))
 
-            if is_duplicate_text(candidate, original_text):
-                continue
+            system_prompt = _build_system_prompt(batch_count)
+            user_prompt = _build_user_prompt(original_text, batch_count)
 
-            if any(is_duplicate_text(candidate, existing) for existing in valid):
-                continue
+            result = self.groq_client.generate_variations(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                count=batch_count,
+            )
+            self._last_model = result.model
 
-            if any(is_duplicate_text(candidate, existing) for existing in exclude):
-                continue
+            logger.info(
+                "Resposta da Groq recebida para geracao de variacoes.",
+                extra={
+                    "model": result.model,
+                    "latency_ms": result.latency_ms,
+                    "prompt_tokens": result.prompt_tokens,
+                    "completion_tokens": result.completion_tokens,
+                    "total_tokens": result.total_tokens,
+                    "prompt_version": settings.AI_CONTENT_VARIATION_PROMPT_VERSION,
+                    "batch_requested": batch_count,
+                    "batch_attempt": attempts,
+                },
+            )
 
-            valid.append(candidate)
+            found_in_batch = 0
+            for candidate in result.variations:
+                if len(candidate) > _MAX_POST_LENGTH:
+                    continue
+
+                # Reforco deterministico das regras do prompt (roadmap:
+                # "Mesmo que a Groq retorne uma variacao que altere URL,
+                # parametros, dominio, encurtador, hashtag, @mencao,
+                # emoji ou CTA, a resposta deve ser considerada
+                # invalida").
+                if not preserves_invariants(original_text, candidate):
+                    logger.warning(
+                        "Variacao descartada: nao preserva elementos "
+                        "imutaveis do texto original."
+                    )
+                    continue
+
+                if is_duplicate_text(candidate, original_text):
+                    continue
+
+                if any(is_duplicate_text(candidate, existing) for existing in valid):
+                    continue
+
+                if any(is_duplicate_text(candidate, existing) for existing in exclude):
+                    continue
+
+                valid.append(candidate)
+                found_in_batch += 1
+
+            # Nenhuma variacao aproveitavel neste lote -- tentar de novo
+            # (proxima iteracao) so ajuda se `attempts < max_attempts`;
+            # nunca gira indefinidamente.
+            if found_in_batch == 0 and not result.variations:
+                break
 
         return tuple(valid)
 

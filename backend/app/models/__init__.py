@@ -15,6 +15,7 @@ from app.models.enums import (
     SubscriptionStatus,
     UserRole,
 )
+from app.models.jitter_settings import JitterSettings
 from app.models.oauth_session import OAuthSession
 from app.models.plan import Plan
 from app.models.post import Post
@@ -38,6 +39,7 @@ __all__ = [
     "AuditLog",
     "OAuthSession",
     "RefreshToken",
+    "JitterSettings",
     "PostStatus",
     "PostAccountStatus",
     "SubscriptionStatus",

@@ -24,6 +24,7 @@ sem depender de nenhum coordenador/lock distribuido externo.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -32,6 +33,7 @@ from app.config.settings import settings
 from app.core.logging_config import get_logger
 from app.database.session import SessionLocal
 from app.oauth.oauth_client import XOAuthClient
+from app.repositories.jitter_settings_repository import JitterSettingsRepository
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.post_account_repository import PostAccountRepository
 from app.repositories.post_media_repository import PostMediaRepository
@@ -40,6 +42,7 @@ from app.repositories.scheduled_post_repository import ScheduledPostRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.twitter_account_repository import TwitterAccountRepository
 from app.repositories.user_repository import UserRepository
+from app.services.jitter_service import JitterService
 from app.services.post_service import PostService
 from app.services.scheduled_post_service import ScheduledPostService
 from app.services.subscription_service import SubscriptionService
@@ -49,13 +52,47 @@ logger = get_logger(__name__)
 _scheduler: BackgroundScheduler | None = None
 
 
-def _claim_due_post_ids() -> tuple:
-    """Reivindica os agendamentos vencidos em uma transacao aberta e
-    retorna os `ScheduledPost` correspondentes.
+def _claim_one_due_scheduled_post() -> uuid.UUID | None:
+    """Reivindica NO MAXIMO um agendamento vencido por vez, em uma
+    transacao curta: `SELECT ... FOR UPDATE SKIP LOCKED` + marcar
+    `executed=True`/`attempts += 1` + commit imediato -- o lock e a
+    conexao sao liberados assim que a reivindicacao termina, ANTES de
+    qualquer chamada de publicacao. Retorna o `post_id` reivindicado,
+    ou `None` se nao houver agendamentos vencidos.
 
-    A transacao apenas e commitada depois que o worker termina de
-    processar os posts agendados, preservando o lock ate que a
-    operacao externa de publicacao seja concluida.
+    Correcao critica (analise de escalabilidade -- clientes com muitas
+    contas conectadas, ver claude.md): a versao anterior reivindicava
+    ate `SCHEDULER_BATCH_SIZE` agendamentos de uma vez so e mantinha a
+    MESMA transacao/conexao aberta (com os locks `FOR UPDATE` de todas
+    as linhas reivindicadas) durante a publicacao de TODOS eles, so
+    commitando (e liberando os locks) no final do lote inteiro. Com o
+    Jitter (ver docs/ROADMAP_JITTER.md) e clientes com dezenas/centenas
+    de contas conectadas, publicar um unico post agendado pode levar
+    minutos; publicar ate 25 posts assim dentro da mesma transacao
+    podia manter uma conexao do Postgres presa por horas. Como o job
+    roda com `max_instances=1`, nenhuma outra execucao do mesmo job
+    comecava enquanto isso -- ou seja, um unico post de um unico
+    cliente grande podia represar TODOS os agendamentos do sistema
+    (de qualquer outro cliente) por um tempo desproporcional.
+
+    Reivindicar (e marcar `executed`) um agendamento por vez, em uma
+    transacao de milissegundos, elimina esse represamento por completo:
+    o lock so existe durante a propria consulta/atualizacao, nunca
+    durante a chamada externa de publicacao (que roda depois, em uma
+    sessao propria e isolada -- ver `_publish_claimed_post`).
+
+    Trade-off aceito: marcar `executed=True` ANTES de publicar (em vez
+    de so no final, como antes) significa que, no caso raro de o
+    processo do worker morrer exatamente entre a reivindicacao e o
+    termino da publicacao deste post especifico, o agendamento nao sera
+    automaticamente tentado de novo pelo scheduler (fica com
+    `executed=True` mas pode ter ficado parcialmente publicado). Isso e
+    aceitavel porque (a) o escopo do risco e um unico post por vez, nao
+    o lote inteiro; e (b) contas que ficarem `PENDING`/`FAILED` nesse
+    cenario continuam podendo ser republicadas manualmente pelo usuario
+    via `POST /posts/{id}/publish` (mesmo fluxo, idempotente) -- o
+    represamento sistemico do lote inteiro, que acontecia sempre (nao
+    so em crash raro), era o problema real a resolver.
     """
     db = SessionLocal()
     try:
@@ -63,24 +100,30 @@ def _claim_due_post_ids() -> tuple:
             ScheduledPostRepository(db),
             PostRepository(db),
         )
-        claimed_schedules = scheduled_post_service.claim_due(
-            datetime.now(UTC), limit=settings.SCHEDULER_BATCH_SIZE
-        )
-        if not claimed_schedules:
+        claimed = scheduled_post_service.claim_due(datetime.now(UTC), limit=1)
+
+        if not claimed:
             db.commit()
-            db.close()
-            return None, []
-        return db, claimed_schedules
+            return None
+
+        scheduled_post = claimed[0]
+        post_id = scheduled_post.post_id
+        scheduled_post.executed = True
+        scheduled_post.attempts += 1
+        db.commit()
+        return post_id
     except Exception:
         db.rollback()
-        logger.exception("Falha ao reivindicar agendamentos vencidos.")
+        logger.exception("Falha ao reivindicar agendamento vencido.")
+        return None
+    finally:
         db.close()
-        return None, []
 
 
-def _publish_claimed_post(post_id) -> None:
+def _publish_claimed_post(post_id: uuid.UUID) -> None:
     """Publica um post ja reivindicado, usando uma sessao propria,
-    isolada da etapa de reivindicacao (ver `_claim_due_post_ids`)."""
+    isolada da etapa de reivindicacao (ver
+    `_claim_one_due_scheduled_post`)."""
     db = SessionLocal()
     try:
         post_service = PostService(
@@ -95,6 +138,7 @@ def _publish_claimed_post(post_id) -> None:
                 PlanRepository(db),
             ),
             post_media_repository=PostMediaRepository(db),
+            jitter_service=JitterService(JitterSettingsRepository(db)),
         )
         post_service.publish_post(post_id)
         logger.info(
@@ -127,31 +171,31 @@ def _publish_claimed_post(post_id) -> None:
 
 
 def process_due_scheduled_posts() -> None:
-    """Job executado periodicamente pelo `BackgroundScheduler`."""
-    claim_db, claimed_schedules = _claim_due_post_ids()
+    """Job executado periodicamente pelo `BackgroundScheduler`.
 
-    if not claimed_schedules:
-        return
+    Processa ate `SCHEDULER_BATCH_SIZE` agendamentos vencidos por tick,
+    reivindicando e publicando UM POR VEZ (ver
+    `_claim_one_due_scheduled_post`) -- nenhuma transacao de
+    reivindicacao fica aberta durante a publicacao em si, entao um post
+    com muitas contas conectadas (e, portanto, com o Jitter aplicado
+    varias vezes -- ver docs/ROADMAP_JITTER.md) nunca prende a fila de
+    agendamentos dos demais clientes atras de si.
+    """
+    processed = 0
 
-    logger.info(
-        "Processando agendamentos vencidos.",
-        extra={"count": len(claimed_schedules)},
-    )
+    while processed < settings.SCHEDULER_BATCH_SIZE:
+        post_id = _claim_one_due_scheduled_post()
+        if post_id is None:
+            break
 
-    try:
-        for scheduled_post in claimed_schedules:
-            _publish_claimed_post(scheduled_post.post_id)
-            scheduled_post.executed = True
-            scheduled_post.attempts += 1
-        claim_db.commit()
-    except Exception:
-        claim_db.rollback()
-        logger.exception(
-            "Falha ao atualizar estado do agendamento apos processamento."
+        _publish_claimed_post(post_id)
+        processed += 1
+
+    if processed:
+        logger.info(
+            "Agendamentos vencidos processados.",
+            extra={"count": processed},
         )
-    finally:
-        if claim_db is not None:
-            claim_db.close()
 
 
 def start_scheduler() -> BackgroundScheduler | None:

@@ -23,6 +23,7 @@ from app.core.exceptions import (
 )
 from app.database.session import get_db
 from app.domain.media_rules import MAX_MEDIA_PER_POST
+from app.domain.plans import MAX_ACCOUNTS_ACROSS_PLANS
 from app.models.enums import PostAccountStatus, PostStatus
 from app.models.post import Post
 from app.models.scheduled_post import ScheduledPost
@@ -44,6 +45,7 @@ class CreatePostRequest(BaseModel):
     )
     twitter_account_ids: list[uuid.UUID] = Field(
         min_length=1,
+        max_length=MAX_ACCOUNTS_ACROSS_PLANS,
     )
     # Publicacao Inteligente (ver
     # docs/ROADMAP_PUBLICACAO_INTELIGENTE.md): texto final por conta,

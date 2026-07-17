@@ -60,12 +60,22 @@ class XOAuthService:
         )
 
     def complete_callback(self, *, state: str, code: str) -> TwitterAccount:
-        session = self._consume_session(state)
-        tokens = self.oauth_client.exchange_code_for_tokens(
-            code=code,
-            code_verifier=session.code_verifier,
-        )
-        profile = self.oauth_client.get_authenticated_user(tokens.access_token)
+        try:
+            session = self._consume_session(state)
+            tokens = self.oauth_client.exchange_code_for_tokens(
+                code=code,
+                code_verifier=session.code_verifier,
+            )
+            profile = self.oauth_client.get_authenticated_user(tokens.access_token)
+        finally:
+            # `self.oauth_client` (ver `XOAuthClient`, analise de
+            # escalabilidade em claude.md) mantem um `httpx.Client`
+            # persistente reaproveitado entre as duas chamadas acima --
+            # fechado aqui, ultimo ponto de uso desta instancia dentro
+            # deste callback (uma por requisicao, ver
+            # `app.auth.dependencies.get_x_oauth_service`).
+            self.oauth_client.close()
+
         existing_account = self.twitter_account_service.get_user_account(
             session.user_id,
             profile.twitter_user_id,

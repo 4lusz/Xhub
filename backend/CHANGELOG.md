@@ -1,3 +1,340 @@
+# CHANGELOG — Auditoria completa de segurança
+
+Última auditoria do projeto antes de produção. Relatório técnico
+completo, metodologia e lista de validações em
+`docs/AUDITORIA_SEGURANCA.md`. 5 vulnerabilidades reais corrigidas
+(nenhuma Crítica), seguindo exatamente a arquitetura existente (nenhuma
+infraestrutura nova, nenhuma funcionalidade de produto):
+
+- **`app/middleware/security_headers.py`** (novo) —
+  `SecurityHeadersMiddleware`, mesmo padrão de
+  `RequestContextMiddleware`/`RateLimitMiddleware`. Aplica
+  `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`,
+  `Referrer-Policy: no-referrer`, `Permissions-Policy` e
+  `Strict-Transport-Security` em toda resposta — antes, nenhum header de
+  segurança era definido (clickjacking possível, sem defesa em
+  profundidade contra XSS futuro).
+- **`app/middleware/rate_limit.py`** — cobertura estendida de
+  `/auth/login` (único endpoint protegido antes) para também incluir
+  `/auth/refresh`, `/intelligent-publication/preview` (custo real por
+  chamada à Groq), `/media/upload` (até 512MB por arquivo, sem cota),
+  `/oauth/x/login`, e `/posts/{id}/publish`/`/posts/{id}/schedule`
+  (caminhos dinâmicos, casados por regex de UUID). Chave de rate limit
+  passou a incluir o método HTTP, para que leitura e escrita no mesmo
+  caminho nunca compartilhem orçamento. `POST /admin/users` e
+  auto-registro deliberadamente fora do escopo (exigem admin
+  autenticado / não existem, respectivamente — fora do modelo de ameaça
+  "atacante com acesso apenas à API pública").
+- **`app/domain/plans.py`** — nova constante
+  `MAX_ACCOUNTS_ACROSS_PLANS` (maior `max_accounts` do catálogo oficial,
+  hoje 100). Aplicada como `max_length` em
+  `CreatePostRequest.twitter_account_ids`
+  (`app/routes/post.py`) e
+  `IntelligentPublicationPreviewRequest.twitter_account_ids`
+  (`app/schemas/intelligent_publication.py`) — antes, uma lista sem
+  limite de UUIDs forçava uma consulta síncrona ao banco por item,
+  antes de qualquer validação de posse (DoS de payload).
+- **`app/middleware/body_size_limit.py`** (novo) —
+  `BodySizeLimitMiddleware`, rejeita (413) requisições não-multipart com
+  `Content-Length` acima de 1 MiB antes de qualquer leitura de corpo.
+  Rotas multipart (upload de mídia) explicitamente isentas — já
+  protegidas em streaming por `app.core.media_storage.save_upload`.
+- **`app/services/auth_service.py`** — `AuthService.authenticate` agora
+  verifica um hash bcrypt "isca" mesmo quando o e-mail não existe,
+  igualando o tempo de resposta ao caso de senha incorreta — antes, a
+  ausência de e-mail pulava a verificação bcrypt (lenta por design),
+  criando um side-channel de timing que permitia enumerar e-mails
+  cadastrados sem depender do conteúdo da mensagem de erro (que já era
+  idêntica nos dois casos).
+- **`requirements.txt`** — `cryptography` 43.0.3→48.0.1, `python-jose`
+  3.3.0→3.4.0, `python-multipart` 0.0.20→0.0.32, `python-dotenv`
+  1.0.1→1.2.2 (CVEs conhecidos corrigidos upstream). `ecdsa`/`pyasn1`
+  (transitivos, usados só pelo caminho RSA/EC do `python-jose` — esta
+  aplicação usa exclusivamente HS256) e `starlette`/`fastapi`
+  permanecem com CVEs conhecidos, documentados individualmente em
+  `docs/AUDITORIA_SEGURANCA.md` como risco aceito ou recomendação para
+  a próxima etapa (mudança de framework de maior superfície).
+
+Validado: `docker compose build backend` sem cache (duas vezes),
+`pytest` 6/6 sem regressão em cada rebuild, roundtrip real de
+`Fernet`/JWT nas novas versões, simulação de flood ao vivo (40
+requisições) confirmando `429` em cada endpoint estendido, `413` real
+em corpo de 2MB, `422` real em lista de 150 UUIDs, `pip-audit` (34→18
+vulnerabilidades conhecidas, restantes justificadas individualmente).
+
+# CHANGELOG — Custo de publicação por link (15 créditos/conta)
+
+Implementação de regra de negócio explicitamente pedida pelo usuário:
+post com link no texto consome **15 créditos por conta publicada**;
+qualquer outro post (texto simples ou com mídia, sem link) continua
+consumindo **1 crédito por conta**, comportamento já existente. Mídia
+anexada nunca altera o custo. Detalhe completo em
+`docs/ROADMAP_CUSTO_LINK.md`.
+
+- `app/domain/publication_cost.py` — reescrito. O código antigo
+  (`PublicationContentType`/`PublicationCostPolicy`, classificação
+  mutuamente exclusiva TEXT/IMAGE/VIDEO/LINK) nunca esteve conectado ao
+  fluxo real e não refletia a regra correta (mídia e link não são
+  categorias mutuamente exclusivas). Substituído por
+  `post_text_has_link(text)`/`credits_per_account_for_post(text)` —
+  reaproveita a mesma detecção de URL já usada pela Publicação
+  Inteligente (`app.domain.content_invariants.extract_invariants`).
+  `PublicationContentType` removido de `app/domain/enums.py` por ficar
+  sem nenhum uso.
+- `app/services/post_service.py` (`PostService.publish_post`) — calcula
+  `credits_per_account_for_post(post.text)` uma única vez por post,
+  logo antes da validação de saldo; usado tanto em
+  `SubscriptionService.ensure_can_publish(required_posts=len(accounts_to_publish) * credits_per_account)`
+  (validação ANTES de qualquer chamada ao X) quanto em
+  `SubscriptionService.consume_posts(subscription.id, credits_per_account)`
+  (consumo por conta publicada com sucesso). Nenhuma outra parte do
+  fluxo (idempotência, Jitter, mídia, Publicação Inteligente, commit
+  por conta) foi alterada.
+
+Decisão técnica: a classificação usa sempre `Post.text` (o texto
+original), nunca `PostAccount.rendered_text` individualmente — correto
+mesmo com Publicação Inteligente, já que toda variação é obrigada a
+preservar exatamente os mesmos links do original
+(`preserves_invariants` descarta qualquer variação que altere links).
+
+Validado: `python -c "import app.main"` limpo; `pytest` sem regressão
+(6 passaram, 0 falharam); script Python descartável (removido após a
+validação, com dublê de `XOAuthClient`, nunca a API real do X) — post
+sem link com 2 contas consome exatamente 2 créditos; post com link e 2
+contas consome exatamente 30 créditos; saldo suficiente para o custo
+antigo mas insuficiente para o novo é bloqueado antes de qualquer
+chamada ao X; custo independe de mídia anexada.
+
+# CHANGELOG — Auditoria funcional completa
+
+Validação de ponta a ponta de todo o backend antes da auditoria de
+segurança final. Relatório técnico completo em
+`docs/AUDITORIA_FUNCIONAL.md`. Problemas reais corrigidos nesta etapa
+(causa raiz, sem funcionalidade nova):
+
+- **`AuthService.authenticate`** (`app/services/auth_service.py`): não
+  checava `user.is_blocked` — um usuário bloqueado conseguia completar
+  `POST /auth/login` normalmente e receber tokens válidos, contrariando
+  a própria regra documentada em
+  `app.domain.policies.ensure_user_not_blocked`. Corrigido para
+  levantar `ForbiddenException("Usuario bloqueado.")`, mesma exceção
+  usada em todo o resto do sistema para este caso.
+- **`AuthService.rotate_refresh_token`**: usava uma mensagem/status
+  genéricos (401, "Usuario nao encontrado ou bloqueado.") misturando
+  duas causas distintas. Separado em `UnauthorizedException` (401,
+  token/usuário não encontrado) e `ForbiddenException` (403, "Usuario
+  bloqueado."), consistente com o resto da aplicação.
+- **`app/routes/auth.py`**: `_raise_http_error` não tinha branch para
+  `ForbiddenException` (caía no default 400) — necessário para as duas
+  correções acima retornarem o status HTTP correto.
+- **`PostService.delete_post`**: não impedia a exclusão de um post com
+  qualquer `PostAccount` já `PUBLISHED`. Como `Post.post_accounts` tem
+  `cascade="all, delete-orphan"`, excluir o post apagava em cascata o
+  único registro local de uma publicação real no X (`x_post_id`),
+  mesmo em posts com falha parcial (`Post.status == FAILED` mas com
+  contas `PUBLISHED` misturadas) — caso que o frontend também não
+  barrava corretamente (ver `frontend/CHANGELOG.md`). Corrigido para
+  recusar (`ConflictException`, 409) sempre que houver ao menos uma
+  conta publicada.
+- **`backend/requirements.txt`**: `pytest` nunca esteve declarado,
+  apesar de `backend/tests/` conter testes reais e da documentação do
+  projeto instruir `docker compose exec backend pytest` como comando
+  padrão de validação — uma imagem construída do zero
+  (`docker compose up --build`) não conseguia rodar a suíte. Adicionado
+  `pytest==8.3.4`.
+- **`backend/tests/test_routes_admin.py`**: o dublê
+  `FakeSubscriptionService` do teste
+  `test_get_subscription_returns_subscription_for_admin` nunca foi
+  atualizado para acompanhar `SubscriptionService`/`SubscriptionResponse`
+  (métodos e campos adicionados por uma feature anterior), causando uma
+  falha conhecida e documentada como "pré-existente, não relacionada"
+  em várias features seguintes. Corrigido agora que o escopo é
+  justamente varrer inconsistências remanescentes. `pytest`: **6
+  passaram, 0 falharam** (primeira vez com a suíte inteiramente verde).
+
+Validado ao vivo contra a stack real (Docker Compose): autenticação
+completa, administração (planos/assinaturas/Jitter/auditoria), upload
+de mídia real (upload/download/isolamento/remoção), CRUD completo de
+posts via HTTP, e um script descartável com 40 asserções cobrindo
+publicação (1/4 contas, Jitter, retry/idempotência), Publicação
+Inteligente (1/2-4/5+ contas, invariantes, indisponibilidade da Groq),
+regras de consumo/limites e scheduler — usando dublês, nunca a API real
+do X/Groq.
+
+Reconfirmado (sem alteração): as três correções de escalabilidade da
+etapa anterior (scheduler um-a-um, batching de variações da Groq,
+reuso de conexão HTTP) continuam intactas e em uso.
+
+Item explicitamente identificado e **não** implementado por exigir
+funcionalidade nova (fora do escopo desta auditoria): custo
+diferenciado por tipo de conteúdo (`app/domain/publication_cost.py`,
+ex. "link consome 15 créditos") permanece desconectado do fluxo real de
+consumo — toda publicação continua custando exatamente 1 crédito por
+conta, independente do conteúdo.
+
+# CHANGELOG — Análise e correções de escalabilidade (10–100 contas conectadas)
+
+Análise arquitetural (leitura de código, sem testes de carga
+artificiais) sobre se o XHub suporta com segurança clientes com 10, 20,
+50 e 100 contas conectadas (teto do plano Agência). Relatório completo
+em `docs/ANALISE_ESCALABILIDADE.md`. Três gargalos reais encontrados e
+corrigidos, sem nenhuma migration nem mudança de comportamento visível
+ao cliente:
+
+1. **Scheduler** (`app/scheduler.py`): a reivindicação de agendamentos
+   vencidos mantinha a mesma transação/conexão do Postgres aberta
+   (com os locks `FOR UPDATE SKIP LOCKED`) durante a publicação de até
+   `SCHEDULER_BATCH_SIZE` posts inteiros, um a um. Com o Jitter e
+   clientes de muitas contas, um único post grande podia represar o
+   agendamento de TODOS os outros clientes por horas (o job roda com
+   `max_instances=1`). Corrigido para reivindicar (e marcar
+   `executed`) um agendamento por vez, em transações de milissegundos,
+   liberando o lock antes de qualquer chamada de publicação.
+2. **Publicação Inteligente** (`app/services/ai_content_variation_service.py`):
+   um post com N contas pedia as N variações de texto em uma única
+   chamada à Groq (ex.: 100 de uma vez para o plano Agência), com risco
+   de estourar o timeout fixo e de degradar a diversidade das
+   variações. Corrigido para dividir automaticamente em lotes de no
+   máximo `AI_CONTENT_VARIATION_MAX_BATCH_SIZE` (novo setting, padrão
+   20) — sem nenhuma mudança de comportamento para o caso comum (até
+   poucas dezenas de contas).
+3. **Chamadas à API do X** (`app/oauth/oauth_client.py`): cada chamada
+   HTTP (renovação de token, cada chunk de upload de mídia, publicação
+   do tweet) abria e fechava sua própria conexão TCP/TLS, mesmo indo
+   para o mesmo host — puro overhead crescendo linearmente com o
+   número de contas de um post. Corrigido com um `httpx.Client`
+   persistente e reaproveitado por toda a vida de cada instância de
+   `XOAuthClient`, fechado explicitamente ao final de
+   `PostService.publish_post`/`XOAuthService.complete_callback`.
+
+Áreas analisadas e confirmadas SEM gargalo (nenhuma mudança
+necessária): idempotência/concorrência de publicação (o commit por
+conta já libera a conexão do banco antes do `time.sleep` do Jitter),
+pool de conexões do banco, upload de mídia (já feito em streaming por
+chunk, nunca carrega o arquivo inteiro em memória).
+
+Risco residual identificado e deliberadamente não alterado: a
+publicação imediata (`POST /posts/{id}/publish`) continua síncrona e
+pode levar minutos para 100 contas, arriscando timeout de
+proxy/navegador antes do fim do processamento (que continua e termina
+corretamente em segundo plano). Corrigir isso exigiria tornar a
+publicação imediata assíncrona/em segundo plano — uma decisão de
+produto (muda a resposta imediata ao usuário), não uma correção técnica
+contida; fica registrado como recomendação para decisão futura.
+
+Validação: `pytest` (5 passaram, 1 falha pré-existente e não
+relacionada), `python -c "import app.main"`, e scripts descartáveis com
+dublês (nunca a API real do X/Groq) confirmando o batching da Groq
+(45 variações → 3 chamadas de `[20, 20, 5]`, comportamento idêntico ao
+anterior para 4 variações) e a reivindicação um-a-um do scheduler (3
+agendamentos de teste processados corretamente, todos marcados
+`executed=True`/`attempts=1`).
+
+# CHANGELOG — Jitter: atraso aleatório entre publicações em múltiplas contas
+
+Última grande funcionalidade antes da auditoria final do projeto:
+sistema de Jitter para tornar a sequência de publicações em múltiplas
+contas menos automatizada. Especificação completa, decisões técnicas
+e validação detalhada em `docs/ROADMAP_JITTER.md` — resumo abaixo.
+
+## Regra de negócio
+
+Quando um post é publicado em mais de uma conta, cada publicação (a
+partir da segunda) espera um atraso aleatório e independente (uniforme
+entre um mínimo e um máximo configuráveis) antes de ocorrer — nunca
+antes da primeira, nunca reaproveitando o valor anterior. Post com uma
+única conta, ou um retry em que só falta uma conta pendente, não
+recebe nenhum atraso.
+
+## Configuração — administrável, sem alteração de código
+
+- **`JitterSettings`** (nova tabela `jitter_settings`, migration
+  `e5f6a7b8c9d0`): tabela *singleton* (sempre exatamente uma linha)
+  com `min_seconds`/`max_seconds`. Criada sob demanda com os valores
+  padrão (`settings.JITTER_DEFAULT_MIN_SECONDS=1.5`/
+  `JITTER_DEFAULT_MAX_SECONDS=8.0`) na primeira leitura — nenhuma
+  migration de dado, uma única fonte de verdade para o default.
+- `PATCH /admin/jitter-settings`: valor passa a valer **imediatamente**
+  para a próxima publicação — `JitterService` sempre lê o valor atual
+  do banco, nunca cacheado em memória. Valida `min >= 0`,
+  `max >= min` e um teto de segurança
+  (`settings.JITTER_MAX_ALLOWED_SECONDS=120.0`, evita um valor digitado
+  por engano travar a chamada síncrona de publicação). Audita
+  `AuditAction.JITTER_SETTINGS_UPDATED` (migration `f6a7b8c9d0e1`).
+
+## Arquitetura — um único ponto de integração no fluxo já existente
+
+- `app/domain/jitter.py`: `sample_jitter_delay_seconds` — função pura
+  (sem I/O), mesmo padrão de `app.domain.media_rules`.
+- `app/services/jitter_service.py` (`JitterService`): único lugar que
+  efetivamente aguarda (`time.sleep`) e loga — nunca decide *quando*
+  aplicar, só *quanto* e *como*.
+- `app/services/post_service.py` (`PostService.publish_post`): loop
+  `for account_index, post_account in enumerate(accounts_to_publish)`
+  — se `account_index > 0`, aplica o atraso antes de qualquer efeito
+  colateral da próxima conta (token, upload de mídia, publicação).
+  Nenhuma outra parte da função foi alterada: idempotência,
+  validações de negócio, tratamento de falha, commits individuais por
+  conta, Publicação Inteligente e mídia continuam idênticos.
+- `app/scheduler.py`: publicação **agendada** usa o mesmo
+  `PostService.publish_post` — mesmo Jitter, sem nenhuma lógica nova
+  no worker.
+
+## Decisões técnicas
+
+- **`time.sleep` síncrono**: consistente com o resto do backend
+  (nenhuma rota `async def`, todas as chamadas externas já são
+  bloqueantes via `httpx.Client`).
+- **`account_index > 0` como única checagem**: matematicamente já
+  cobre as duas regras ("nunca antes da primeira" + "sem atraso com
+  uma única conta") sem duplicar validação.
+- **Tabela singleton em vez de `.env`**: variáveis de ambiente só são
+  lidas na inicialização do processo (`lru_cache`) — exigiria
+  reiniciar a aplicação a cada ajuste. Uma linha em banco, lida a cada
+  publicação, satisfaz "vale para as próximas publicações sem
+  alteração de código" diretamente.
+- **Impacto no scheduler (análise explícita)**: `process_due_scheduled_posts`
+  processa o lote sequencialmente e só comita a reivindicação
+  (`FOR UPDATE SKIP LOCKED`) ao final — o Jitter aumenta o tempo total
+  de um tick proporcionalmente, uma consequência esperada e inerente
+  ao próprio objetivo da funcionalidade, não uma quebra de garantia:
+  `max_instances=1` + `coalesce=True` (já configurados) garantem que
+  isso nunca causa sobreposição ou duplicação, só atraso no início do
+  próximo tick. Nenhuma mudança na lógica de transação/lock do
+  scheduler foi feita.
+
+## Validação
+
+Ciclo completo testado via `curl` contra a API real e via scripts de
+integração com um `XOAuthClient` dublê (removidos após validar, nunca
+tocaram a API real do X): 1 conta sem atraso (~0.05s) · 4 contas com
+Publicação Inteligente — 3 intervalos, todos dentro do range
+configurado e com valores distintos entre si, cada conta com seu
+texto correto · mídia real + 2 contas — upload por conta e atraso
+funcionando juntos, limpeza de arquivo preservada · publicação
+agendada com mídia — mesmo Jitter, mesmo caminho de código · falha em
+1 de 3 contas — atraso continua entre tentativas, status/erro
+corretos · retry com só 1 conta pendente — sem atraso, idempotência
+preservada (contas já `PUBLISHED` não reprocessadas) · validação
+administrativa (max<min, min negativo, max acima do teto) · audit log
+correto, sem vazar dados sensíveis. `pytest`: 5 passaram, 1 falha
+pré-existente e não relacionada.
+
+**Arquivos criados:** `app/domain/jitter.py`,
+`app/models/jitter_settings.py`,
+`app/repositories/jitter_settings_repository.py`,
+`app/services/jitter_service.py`, `docs/ROADMAP_JITTER.md`,
+`alembic/versions/e5f6a7b8c9d0_create_jitter_settings_table.py`,
+`alembic/versions/f6a7b8c9d0e1_add_jitter_settings_updated_to_audit_action_enum.py`.
+
+**Arquivos modificados:** `app/models/enums.py`,
+`app/models/__init__.py`, `app/config/settings.py`,
+`app/auth/dependencies.py`, `app/services/post_service.py`,
+`app/routes/admin.py`, `app/scheduler.py`, `.env.example`.
+
+---
+
 # CHANGELOG — Primeiro acesso obrigatório (troca de senha temporária)
 
 Funcionalidade de segurança: toda conta criada por um administrador

@@ -1,55 +1,50 @@
-"""Calculo de custo de publicacoes do XHub.
+"""Calculo de custo de publicacao (em creditos do plano) por conta.
 
-Nota (auditoria item 13): este modulo pondera custos diferentes por
-tipo de conteudo (ex.: LINK custando 15x mais que TEXT), mas o fluxo
-real de publicacao (`PostService.publish_post`) sempre consome
-exatamente 1 posto do saldo do plano por conta publicada, e
-`CreatePostRequest` (`app.routes.post`) so aceita `text` -- nao ha
-suporte real a imagem/video/link ainda. Este modulo NAO e importado
-fora de si mesmo e NAO esta em uso no fluxo de publicacao atual; ele
-existe como modelagem preparatoria para quando o produto suportar
-outros tipos de conteudo. Antes de conecta-lo ao fluxo real, revisar
-se os pesos abaixo ainda refletem a politica de negocio desejada.
+Regra oficial de negocio:
+- Post cujo texto contenha pelo menos um link (URL): 15 creditos por
+  conta publicada.
+- Qualquer outro post -- texto simples ou com midia (imagem/gif/video)
+  anexada, sem link no texto: 1 credito por conta publicada (o
+  comportamento padrao ja existente antes desta regra).
+
+A midia anexada (`Post.media`) NUNCA altera o custo -- so a presenca de
+link no TEXTO do post importa. A classificacao e feita uma unica vez
+por post, sobre `Post.text` (o texto original, nunca sobrescrito -- ver
+`app.services.post_service.PostService.publish_post`), e vale
+igualmente para todas as contas: a Publicacao Inteligente preserva
+exatamente os links do texto original em toda variacao gerada (ver
+`app.domain.content_invariants.preserves_invariants` -- uma variacao
+que adicionasse ou removesse um link seria descartada antes mesmo de
+chegar aqui), entao nunca existe o caso de uma conta publicar um texto
+com link e outra do MESMO post sem.
 """
 
-from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Mapping
+from __future__ import annotations
 
-from app.core.exceptions import ValidationException
-from app.domain.enums import PublicationContentType
+from app.domain.content_invariants import extract_invariants
 
+# Creditos consumidos por conta publicada quando o texto do post NAO
+# contem nenhum link -- o comportamento padrao, ja existente antes
+# desta regra (texto simples ou com midia anexada).
+DEFAULT_CREDITS_PER_ACCOUNT = 1
 
-@dataclass(frozen=True)
-class PublicationCostPolicy:
-    weights: Mapping[PublicationContentType, int]
-
-    def get_weight(self, content_type: PublicationContentType) -> int:
-        try:
-            return self.weights[content_type]
-        except KeyError as exc:
-            raise ValidationException("Tipo de publicacao invalido.") from exc
+# Creditos consumidos por conta publicada quando o texto do post
+# contem pelo menos um link. Um post com link publicado em N contas
+# consome `LINK_CREDITS_PER_ACCOUNT * N` creditos no total -- mesma
+# logica "por conta" ja usada para o caso padrao, nao um valor fixo por
+# post independente do numero de contas.
+LINK_CREDITS_PER_ACCOUNT = 15
 
 
-DEFAULT_PUBLICATION_COST_POLICY = PublicationCostPolicy(
-    weights=MappingProxyType(
-        {
-            PublicationContentType.TEXT: 1,
-            PublicationContentType.IMAGE: 1,
-            PublicationContentType.VIDEO: 1,
-            PublicationContentType.LINK: 15,
-        }
-    )
-)
+def post_text_has_link(text: str) -> bool:
+    """`True` se `text` contiver pelo menos uma URL (mesma deteccao
+    usada pela preservacao de invariantes da Publicacao Inteligente --
+    ver `app.domain.content_invariants.extract_invariants`)."""
+    return len(extract_invariants(text).urls) > 0
 
 
-def calculate_publication_cost(
-    *,
-    content_type: PublicationContentType,
-    selected_accounts_count: int,
-    policy: PublicationCostPolicy = DEFAULT_PUBLICATION_COST_POLICY,
-) -> int:
-    if selected_accounts_count <= 0:
-        raise ValidationException("Selecione pelo menos uma conta para publicar.")
-
-    return policy.get_weight(content_type) * selected_accounts_count
+def credits_per_account_for_post(text: str) -> int:
+    """Creditos consumidos por CADA conta publicada com sucesso para um
+    post com este texto -- `LINK_CREDITS_PER_ACCOUNT` se houver link,
+    `DEFAULT_CREDITS_PER_ACCOUNT` caso contrario."""
+    return LINK_CREDITS_PER_ACCOUNT if post_text_has_link(text) else DEFAULT_CREDITS_PER_ACCOUNT

@@ -13,7 +13,7 @@ from app.domain.contexts import (
     SubscriptionContext,
     UserContext,
 )
-from app.domain.enums import PublicationContentType, SubscriptionStatus, UserRole
+from app.domain.enums import SubscriptionStatus, UserRole
 from app.domain.policies import (
     can_connect_account,
     ensure_admin,
@@ -27,6 +27,7 @@ from app.domain.policies import (
     should_block_new_connections_after_plan_change,
 )
 from app.domain.plans import (
+    MAX_ACCOUNTS_ACROSS_PLANS,
     OFFICIAL_PLANS,
     PLAN_AGENCY,
     PLAN_CREATOR,
@@ -35,9 +36,10 @@ from app.domain.plans import (
     OfficialPlan,
 )
 from app.domain.publication_cost import (
-    DEFAULT_PUBLICATION_COST_POLICY,
-    PublicationCostPolicy,
-    calculate_publication_cost,
+    DEFAULT_CREDITS_PER_ACCOUNT,
+    LINK_CREDITS_PER_ACCOUNT,
+    credits_per_account_for_post,
+    post_text_has_link,
 )
 
 __all__ = [
@@ -52,10 +54,11 @@ __all__ = [
     "UserContext",
     "SubscriptionStatus",
     "UserRole",
-    "PublicationContentType",
-    "DEFAULT_PUBLICATION_COST_POLICY",
-    "PublicationCostPolicy",
-    "calculate_publication_cost",
+    "DEFAULT_CREDITS_PER_ACCOUNT",
+    "LINK_CREDITS_PER_ACCOUNT",
+    "credits_per_account_for_post",
+    "post_text_has_link",
+    "MAX_ACCOUNTS_ACROSS_PLANS",
     "OFFICIAL_PLANS",
     "PLAN_AGENCY",
     "PLAN_CREATOR",

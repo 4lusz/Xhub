@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Sparkles } from "lucide-react";
+import { Link as LinkIcon, Sparkles } from "lucide-react";
 
 import { AccountSelector } from "@/components/posts/AccountSelector";
 import { CharacterCounter } from "@/components/common/CharacterCounter";
@@ -17,6 +17,7 @@ import { useIntelligentPublicationPreview } from "@/hooks/useIntelligentPublicat
 import { useMediaComposer } from "@/hooks/useMediaComposer";
 import { useCreatePost, usePublishPost, useSchedulePost } from "@/hooks/usePosts";
 import { useToast } from "@/hooks/use-toast";
+import { containsLink, LINK_CREDITS_PER_ACCOUNT } from "@/lib/publicationCost";
 import type { ApiError } from "@/types/api";
 
 const MANDATORY_VARIATION_THRESHOLD = 5;
@@ -41,6 +42,7 @@ export function NewPostPage() {
   const accountCount = selectedAccountIds.length;
   const isMandatory = accountCount >= MANDATORY_VARIATION_THRESHOLD;
   const isOptionalRange = accountCount >= 2 && accountCount <= OPTIONAL_VARIATION_MAX;
+  const hasLink = containsLink(text);
   const canGeneratePreview =
     text.trim().length > 0 &&
     text.length <= 280 &&
@@ -149,6 +151,19 @@ export function NewPostPage() {
               onRemoveItem={media.removeItem}
               onEditItem={media.editItem}
             />
+
+            {hasLink && (
+              <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3">
+                <LinkIcon className="mt-0.5 h-4 w-4 text-warning" />
+                <p className="text-xs text-warning">
+                  Este texto contém um link: cada conta publicada consumirá{" "}
+                  {LINK_CREDITS_PER_ACCOUNT} créditos em vez de 1
+                  {accountCount > 0
+                    ? ` (${LINK_CREDITS_PER_ACCOUNT * accountCount} créditos no total para as ${accountCount} contas selecionadas).`
+                    : "."}
+                </p>
+              </div>
+            )}
 
             {isOptionalRange && (
               <div className="flex items-center justify-between rounded-lg border border-border bg-surface px-4 py-3">

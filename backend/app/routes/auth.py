@@ -30,6 +30,7 @@ from app.auth.dependencies import (
 from app.core.exceptions import (
     BaseAppException,
     ConflictException,
+    ForbiddenException,
     UnauthorizedException,
     ValidationException,
 )
@@ -77,6 +78,13 @@ def _raise_http_error(exc: BaseAppException) -> None:
         status_code = status.HTTP_409_CONFLICT
     elif isinstance(exc, UnauthorizedException):
         status_code = status.HTTP_401_UNAUTHORIZED
+    elif isinstance(exc, ForbiddenException):
+        # Correcao (auditoria funcional): faltava esta branch -- antes,
+        # um `ForbiddenException` (ex.: bloqueio de conta em
+        # `AuthService.authenticate`/`rotate_refresh_token`) caia no
+        # default 400, em vez do 403 usado para bloqueio em toda a
+        # demais aplicacao (ver `app.auth.dependencies`).
+        status_code = status.HTTP_403_FORBIDDEN
     elif isinstance(exc, ValidationException):
         status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
 

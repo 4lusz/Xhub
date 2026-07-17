@@ -14,12 +14,17 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.domain.plans import MAX_ACCOUNTS_ACROSS_PLANS
+
 Strategy = Literal["original", "optional_variation", "mandatory_variation"]
 
 
 class IntelligentPublicationPreviewRequest(BaseModel):
     text: str = Field(min_length=1, max_length=280)
-    twitter_account_ids: list[uuid.UUID] = Field(min_length=1)
+    twitter_account_ids: list[uuid.UUID] = Field(
+        min_length=1,
+        max_length=MAX_ACCOUNTS_ACROSS_PLANS,
+    )
     # Relevante apenas para 2-4 contas: reflete o estado do botao
     # "Publicacao Inteligente" no frontend (ativado por padrao). Para 1
     # conta e ignorado (nunca gera variacao); para 5+ contas e ignorado

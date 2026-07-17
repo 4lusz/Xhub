@@ -82,7 +82,15 @@ export function PostsPage() {
                   : undefined
               }
               onDelete={
-                post.status !== "published" ? () => deletePost.mutate(post.id) : undefined
+                // Espelha a regra do backend (`PostService.delete_post`):
+                // um post com falha PARCIAL (`status === "failed"`) pode
+                // ter algumas contas já `published` -- checar apenas o
+                // status agregado escondia o botão de excluir só quando
+                // TODAS as contas tinham sucesso, deixando visível para
+                // um caso que o backend agora recusa (409).
+                post.accounts.every((account) => account.status !== "published")
+                  ? () => deletePost.mutate(post.id)
+                  : undefined
               }
               isBusy={publishPost.isPending || deletePost.isPending}
             />

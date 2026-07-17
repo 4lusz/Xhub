@@ -20,6 +20,7 @@ import { AdminUsersPage } from "@/pages/AdminUsersPage";
 import { AdminPlansPage } from "@/pages/AdminPlansPage";
 import { AdminAuditLogsPage } from "@/pages/AdminAuditLogsPage";
 import { AdminPostsPage } from "@/pages/AdminPostsPage";
+import { AdminJitterSettingsPage } from "@/pages/AdminJitterSettingsPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 function App() {
@@ -50,6 +51,7 @@ function App() {
             <Route path="/admin/plans" element={<AdminPlansPage />} />
             <Route path="/admin/audit-logs" element={<AdminAuditLogsPage />} />
             <Route path="/admin/posts" element={<AdminPostsPage />} />
+            <Route path="/admin/jitter" element={<AdminJitterSettingsPage />} />
           </Route>
         </Route>
       </Route>

@@ -1,3 +1,157 @@
+# CHANGELOG — Auditoria completa de segurança (frontend aprovado sem alteração)
+
+Última auditoria do projeto antes de produção. Relatório técnico
+completo em `docs/AUDITORIA_SEGURANCA.md`. O frontend foi auditado por
+completo (XSS/DOM injection, armazenamento de tokens, guards de rota,
+vazamento de informação) e **aprovado sem necessidade de nenhuma
+alteração de código**:
+
+- Nenhum `dangerouslySetInnerHTML`/`innerHTML`/`eval`/`document.write`
+  em todo o código-fonte (busca direcionada, zero ocorrências) — React
+  escapa JSX por padrão, sem vetor de XSS conhecido.
+- Tokens (`accessToken`/`refreshToken`) ficam em `localStorage` via
+  `zustand`/`persist` — aceito como trade-off arquitetural, sem risco
+  concreto na ausência de XSS; mitigado do lado do backend com um
+  `Content-Security-Policy` restritivo (ver `backend/CHANGELOG.md`).
+- Guards de rota (`ProtectedRoute`/`AdminRoute`/`ClientOnlyRoute`) são
+  UX pura — toda autorização real acontece no backend, então um bypass
+  client-side (ex.: DevTools) nunca expõe dado que o backend não
+  entregaria de qualquer forma.
+- `npm audit` (produção e desenvolvimento): 0 vulnerabilidades
+  conhecidas em toda a árvore de dependências.
+
+# CHANGELOG — Aviso de custo por link no compositor de posts
+
+Backend passou a cobrar 15 créditos por conta (em vez de 1) para posts
+com link no texto (ver `backend/CHANGELOG.md` e
+`docs/ROADMAP_CUSTO_LINK.md`). Para que o usuário nunca seja
+surpreendido pelo consumo maior de saldo, o compositor de posts agora
+avisa antes de publicar.
+
+- `src/lib/publicationCost.ts` (novo) — espelha a detecção de link do
+  backend (`containsLink`) só para feedback instantâneo; o backend
+  continua sendo a única fonte de verdade real sobre o custo.
+- `src/pages/NewPostPage.tsx` — aviso visível (mesmo padrão visual já
+  usado para os avisos de Publicação Inteligente) quando o texto
+  digitado contém um link, mostrando o custo por conta e o total para
+  as contas selecionadas.
+
+Validado: `tsc --noEmit` e `npm run build` limpos.
+
+# CHANGELOG — Auditoria funcional completa
+
+Validação de ponta a ponta de todo o frontend antes da auditoria de
+segurança final. Relatório técnico completo em
+`docs/AUDITORIA_FUNCIONAL.md`. Duas correções reais (sem funcionalidade
+nova):
+
+- **`pages/PostsPage.tsx`**: o botão "Excluir" ficava visível sempre
+  que `post.status !== "published"` — mas esse é o status *agregado*
+  do post; um post com falha parcial (`status === "failed"` com
+  algumas contas `published` e outras `failed`) mostrava o botão
+  mesmo tendo publicações reais associadas. Corrigido para checar
+  `post.accounts.every(a => a.status !== "published")`, espelhando a
+  nova validação do backend (`PostService.delete_post`, ver
+  `backend/CHANGELOG.md`) que agora recusa (409) excluir qualquer post
+  com ao menos uma conta publicada.
+- **`pages/AccountsPage.tsx`**: o diálogo de confirmação ao desconectar
+  uma conta do X afirmava "Posts já publicados não são afetados" — mas
+  `TwitterAccount.post_accounts` tem cascade de exclusão no backend, e
+  desconectar a conta apaga o histórico local dessas publicações
+  (`PostAccount`, incluindo `x_post_id`), mesmo o tweet continuando
+  publicado no X. Texto corrigido para descrever a consequência real,
+  sem bloquear a ação (desconectar continua sendo permitido a qualquer
+  momento, por ser uma ação legítima do usuário).
+
+Validado: `tsc --noEmit` e `npm run build` limpos; revisão completa de
+código de todas as páginas/componentes relevantes (estados de
+loading/vazio/erro consistentes em toda a aplicação, nenhuma outra
+inconsistência encontrada).
+
+# CHANGELOG — Painel administrativo do Jitter
+
+Tela administrativa para o sistema de Jitter implementado no backend
+(ver CHANGELOG do backend e `docs/ROADMAP_JITTER.md`): atraso
+aleatório entre publicações em contas diferentes de um mesmo post.
+Nenhuma alteração na experiência do cliente final — o Jitter é
+inteiramente transparente para quem publica.
+
+## Novo
+
+- `types/jitter.ts`, `services/jitter.ts`,
+  `hooks/useAdminJitterSettings.ts`: tipos, chamadas HTTP
+  (`GET`/`PATCH /admin/jitter-settings`) e hooks, mesmo padrão de
+  `hooks/useAdminPlans.ts`.
+- `pages/AdminJitterSettingsPage.tsx`: tela dedicada "Jitter" no menu
+  administrativo (mesmo padrão visual de `AdminPlansPage.tsx`) —
+  campos "Tempo mínimo (segundos)" e "Tempo máximo (segundos)",
+  validados no cliente (min ≥ 0, max ≥ min, teto de 120s) espelhando
+  as mesmas regras aplicadas pelo backend, antes de enviar.
+
+## Alterado
+
+- `components/layout/Sidebar.tsx`: novo item "Jitter" no menu
+  administrativo (`/admin/jitter`).
+- `App.tsx`: rota registrada.
+
+## Validação
+
+- `tsc --noEmit` e `npm run build` limpos, sem erros de tipo, 2271
+  módulos.
+- Servidor de desenvolvimento verificado via `curl` após restart:
+  `AdminJitterSettingsPage.tsx` e `useAdminJitterSettings.ts`
+  servidos (200); item "Jitter" confirmado no `Sidebar.tsx`; rota
+  confirmada em `App.tsx`.
+- Fluxo completo (leitura, validação de limites, atualização, efeito
+  imediato na próxima publicação) validado ponta a ponta contra o
+  backend real via `curl` (ver CHANGELOG do backend).
+- **Não testado interativamente no navegador** nesta sessão — sem
+  ferramenta de automação de browser disponível no ambiente.
+  Recomenda-se clicar na tela "Jitter" antes de depender dela no dia
+  a dia.
+
+**Arquivos criados:** `types/jitter.ts`, `services/jitter.ts`,
+`hooks/useAdminJitterSettings.ts`, `pages/AdminJitterSettingsPage.tsx`.
+
+**Arquivos modificados:** `components/layout/Sidebar.tsx`, `App.tsx`.
+
+---
+
+# CHANGELOG — Correção: erro "[object Object]" e preço 0 ao editar plano
+
+Reportado pelo usuário: `PATCH /admin/plans/{id}` falhava com 422 ao
+salvar um plano com preço `0`, e o toast de erro mostrava
+"[object Object]" em vez de uma mensagem legível.
+
+**Causa raiz (validação divergente):**
+`components/admin/EditPlanDialog.tsx` aceitava preço `>= 0`
+(`z.coerce.number().min(0, ...)`), mas o backend sempre exigiu preço
+`> 0` (`UpdatePlanRequest.price: float = Field(gt=0)`, ver
+`app/routes/admin.py`) — o formulário deixava passar um valor que o
+servidor sempre rejeitou. Corrigido para `min(0.01, "O preço deve ser
+maior que zero.")`, espelhando a regra real do backend.
+
+**Causa raiz ("[object Object]"):** bug sistêmico, não específico
+deste formulário. Um 422 de validação do próprio Pydantic (antes de
+chegar à rota) tem `detail` como uma LISTA de `{loc, msg, type}` — só
+os erros de negócio (`BaseAppException`) do XHub têm `detail` como
+string. `services/api.ts` passava `detail` direto para
+`new ApiError(status, detail)`; atribuir um array a `Error.message`
+vira a string `"[object Object]"` por coerção padrão do JS. Agora
+`formatErrorDetail` (novo helper em `services/api.ts`) trata os dois
+formatos, produzindo `"price: Input should be greater than 0"` em vez
+disso — corrige esse erro em QUALQUER formulário do app, não só no de
+planos.
+
+**Validação:** `tsc --noEmit` e `npm run build` limpos; confirmado via
+`curl` contra o backend real que `PATCH` com `price=0` retorna 422 com
+o array de detalhe, e que `price=49.9` salva normalmente (200).
+
+**Arquivos modificados:** `types/api.ts`, `services/api.ts`,
+`components/admin/EditPlanDialog.tsx`.
+
+---
+
 # CHANGELOG — Primeiro acesso obrigatório (troca de senha temporária)
 
 Tela e fluxo para a funcionalidade de segurança implementada no

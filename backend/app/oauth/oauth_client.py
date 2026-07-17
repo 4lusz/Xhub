@@ -69,6 +69,43 @@ class XPublishedPost:
 
 
 class XOAuthClient:
+    """Cliente HTTP para OAuth2, User Lookup, publicacao e upload de
+    midia da API oficial do X.
+
+    Mantem um unico `httpx.Client` reaproveitado por TODAS as chamadas
+    desta instancia (ver `__init__`), em vez de abrir um `httpx.Client`
+    novo a cada chamada individual. Correcao de escalabilidade
+    (clientes com muitas contas conectadas -- ver claude.md, secao de
+    analise arquitetural): `PostService.publish_post` reutiliza a MESMA
+    instancia de `XOAuthClient` para todas as contas de um post (ver
+    `app.auth.dependencies.get_post_service`/`app.scheduler`); sem esta
+    mudanca, cada chamada a `api.x.com` (renovacao de token, cada chunk
+    de upload de midia, publicacao do tweet) abria e fechava sua propria
+    conexao TCP/TLS -- para um post com dezenas/centenas de contas, isso
+    significava centenas de handshakes TLS redundantes ao MESMO host,
+    puro overhead de rede sem nenhum beneficio. Com um cliente
+    persistente, todas as chamadas da mesma instancia reaproveitam o
+    pool de conexoes keep-alive do `httpx`.
+
+    Cada chamador que instancia `XOAuthClient()` e responsavel por
+    chamar `close()` quando terminar de usa-lo (ver
+    `PostService.publish_post` e `XOAuthService.complete_callback`) --
+    tambem pode ser usado como context manager (`with XOAuthClient() as
+    client: ...`).
+    """
+
+    def __init__(self) -> None:
+        self._client = httpx.Client(timeout=10.0)
+
+    def __enter__(self) -> "XOAuthClient":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._client.close()
+
     def build_authorization_url(
         self,
         *,
@@ -143,8 +180,7 @@ class XOAuthClient:
         else:
             data["client_id"] = settings.X_CLIENT_ID
 
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(X_TOKEN_URL, data=data, headers=headers)
+        response = self._client.post(X_TOKEN_URL, data=data, headers=headers)
 
         if response.status_code >= 400:
             raise UnauthorizedException("Falha ao trocar authorization code por tokens.")
@@ -169,8 +205,7 @@ class XOAuthClient:
             data["client_id"] = settings.X_CLIENT_ID
 
         try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.post(X_TOKEN_URL, data=data, headers=headers)
+            response = self._client.post(X_TOKEN_URL, data=data, headers=headers)
         except httpx.TimeoutException as exc:
             raise ServiceUnavailableException(
                 "Timeout ao renovar token de acesso do X."
@@ -198,8 +233,7 @@ class XOAuthClient:
         # nao inclui a foto de perfil na resposta por padrao.
         params = {"user.fields": "profile_image_url"}
 
-        with httpx.Client(timeout=10.0) as client:
-            response = client.get(X_ME_URL, headers=headers, params=params)
+        response = self._client.get(X_ME_URL, headers=headers, params=params)
 
         if response.status_code >= 400:
             raise UnauthorizedException("Falha ao buscar usuario autenticado no X.")
@@ -241,12 +275,11 @@ class XOAuthClient:
             payload["media"] = {"media_ids": media_ids}
 
         try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.post(
-                    X_POST_URL,
-                    headers=headers,
-                    json=payload,
-                )
+            response = self._client.post(
+                X_POST_URL,
+                headers=headers,
+                json=payload,
+            )
         except httpx.TimeoutException as exc:
             raise ServiceUnavailableException(
                 "Timeout ao conectar com a API do X."
@@ -506,8 +539,13 @@ class XOAuthClient:
             request_kwargs["files"] = merged_files
 
         try:
-            with httpx.Client(timeout=settings.X_MEDIA_UPLOAD_TIMEOUT_SECONDS) as client:
-                response = client.request(method, url, headers=headers, **request_kwargs)
+            response = self._client.request(
+                method,
+                url,
+                headers=headers,
+                timeout=settings.X_MEDIA_UPLOAD_TIMEOUT_SECONDS,
+                **request_kwargs,
+            )
         except httpx.TimeoutException as exc:
             raise ServiceUnavailableException(f"Timeout ao enviar midia para o X ({context}).") from exc
         except httpx.RequestError as exc:

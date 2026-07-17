@@ -32,11 +32,13 @@ from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.twitter_account_repository import TwitterAccountRepository
 from app.repositories.user_repository import UserRepository
+from app.repositories.jitter_settings_repository import JitterSettingsRepository
 from app.repositories.post_account_repository import PostAccountRepository
 from app.repositories.post_media_repository import PostMediaRepository
 from app.repositories.post_repository import PostRepository
 from app.repositories.scheduled_post_repository import ScheduledPostRepository
 from app.services.ai_content_variation_service import AIContentVariationService
+from app.services.jitter_service import JitterService
 from app.services.media_service import MediaService
 from app.services.post_service import PostService
 from app.services.scheduled_post_service import ScheduledPostService
@@ -96,6 +98,10 @@ def get_media_service(db: Session = Depends(get_db)) -> MediaService:
     return MediaService(PostMediaRepository(db))
 
 
+def get_jitter_service(db: Session = Depends(get_db)) -> JitterService:
+    return JitterService(JitterSettingsRepository(db))
+
+
 def get_post_service(
     db: Session = Depends(get_db),
 ) -> PostService:
@@ -107,6 +113,7 @@ def get_post_service(
         x_oauth_client=XOAuthClient(),
         subscription_service=get_subscription_service(db),
         post_media_repository=PostMediaRepository(db),
+        jitter_service=get_jitter_service(db),
     )
 
 

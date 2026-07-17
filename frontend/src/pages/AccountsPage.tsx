@@ -53,7 +53,7 @@ export function AccountsPage() {
                 ? `Desconectar @${accounts.find((a) => a.id === pendingId)?.username ?? ""}?`
                 : "Desconectar conta?"
             }
-            description="Posts já publicados não são afetados, mas você não poderá mais publicar nesta conta até reconectá-la."
+            description="Os tweets já publicados continuam no X normalmente, mas o histórico dessa conta no XHub será removido e você não poderá mais publicar nela até reconectá-la."
             confirmLabel="Desconectar"
             destructive
             isLoading={disconnect.isPending}

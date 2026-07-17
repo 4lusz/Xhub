@@ -1,12 +1,15 @@
-# Publicacao Inteligente - Especificacao oficial para implementacao futura
+# Publicacao Inteligente - Especificacao e estado implementado
 
-Este documento e a especificacao tecnica oficial para uma IA ou desenvolvedor
-implementar a funcionalidade Publicacao Inteligente no XHub. Ele incorpora o
-roadmap oficial fornecido pelo usuario e deve ser seguido preservando a
-arquitetura atual do XHub e evitando refatoracoes desnecessarias.
+Este documento registra a especificacao tecnica oficial da funcionalidade
+Publicacao Inteligente do XHub e o estado JA IMPLEMENTADO no codigo atual,
+seguindo o mesmo formato de `docs/ROADMAP_MEDIA.md`,
+`docs/ROADMAP_PRIMEIRO_ACESSO.md` e `docs/ROADMAP_JITTER.md`. Trate o codigo
+como fonte da verdade em caso de divergencia futura com este documento.
 
-Nao ha logica de negocio implementada nesta tarefa; este arquivo define a
-arquitetura, regras e roadmap esperados.
+As secoes abaixo que descrevem regras de negocio, prompt da IA e roadmap
+permanecem como a especificacao oficial que guiou a implementacao (todas
+satisfeitas pelo codigo atual). As secoes "Arquitetura implementada" e
+"Validacao realizada" descrevem o que de fato existe hoje.
 
 ## Objetivo
 
@@ -30,22 +33,15 @@ preservando o conteudo original.
 
 ## Estado atual relevante
 
-O fluxo atual cria um `Post` com `Post.text` e um `PostAccount` para cada conta
-selecionada. A publicacao usa `Post.text` diretamente para todas as contas.
-
-Limitacoes atuais:
-
-- `PostAccount` nao possui `rendered_text`.
-- Nao existe cliente Groq.
-- Nao existe `AIContentVariationService`.
-- Nao existe service de geracao de variacoes.
-- Nao existe endpoint de preview.
-- Nao existe frontend de modal/edicao de variacoes.
-- Nao existe botao "Publicacao Inteligente".
-- Nao existe regra de obrigatoriedade para 5+ contas.
-- Nao existe cache de variacoes de IA.
-- Nao existe registro estruturado de modelo, tempo, tokens, custo e versao do
-  prompt para esta funcionalidade.
+Totalmente implementado. `PostAccount.rendered_text` existe (migration
+`f3a4b5c6d7e8_add_rendered_text_to_post_accounts.py`); `POST
+/intelligent-publication/preview` gera o preview por conta via
+`AIContentVariationService` + `GroqClient`; a confirmacao reaproveita `POST
+/posts` com `rendered_texts`; `PostService.publish_post` usa
+`post_account.rendered_text or post.text` na publicacao real. Frontend possui
+o modal de pre-visualizacao com edicao manual
+(`IntelligentPublicationPreviewModal.tsx`). Ver "Arquitetura implementada"
+abaixo para o mapeamento completo arquivo a arquivo.
 
 ## Principio central
 
@@ -237,96 +233,102 @@ Responsabilidades do `AIContentVariationService`:
 - Retornar preview seguro para a rota/frontend.
 - Tratar indisponibilidade da Groq de acordo com a regra oficial.
 
-## Arquivos previstos para implementacao futura
+## Arquitetura implementada
+
+Preserva a arquitetura em camadas do XHub (`Routes -> Services ->
+Repositories -> Models`), com a Groq isolada em um cliente dedicado.
 
 Backend:
 
-- `backend/app/integrations/groq_client.py`
-  - Cliente HTTP da Groq.
-  - Responsavel por timeout, payload, parse de resposta e erros de integracao.
-  - Nao deve conhecer models SQLAlchemy.
-  - Deve expor metadados de modelo, tokens e custo quando a API fornecer.
+- `backend/app/integrations/groq_client.py` (`GroqClient`)
+  - Cliente HTTP puro da Groq (`https://api.groq.com/openai/v1/chat/completions`,
+    schema compativel com OpenAI mas NUNCA chamando a OpenAI em si).
+    `model=settings.GROQ_MODEL` (padrao `llama-3.3-70b-versatile`),
+    `temperature=0.9`, `response_format={"type":"json_object"}`. Nao conhece
+    models SQLAlchemy. Mapeia 401/403 -> `UnauthorizedException` (chave
+    invalida, nunca logada), 429/5xx/timeout -> `ServiceUnavailableException`,
+    demais 4xx/JSON invalido -> `BadRequestException`. Retorna
+    `GroqVariationResult` com modelo, latencia e tokens de prompt/completion/
+    total (metadados logados; o texto do prompt/resposta nunca e logado).
+  - `validate_configuration()` roda no startup (`app/main.py`) e derruba a
+    aplicacao se `GROQ_API_KEY` estiver ausente -- falha rapido, nunca em
+    tempo de request.
 
 - `backend/app/services/ai_content_variation_service.py`
-  - Nome oficial do service: `AIContentVariationService`.
-  - Orquestra geracao de variacoes.
-  - Recebe cliente Groq e repositories necessarios.
-  - Decide estrategia por quantidade de contas.
-  - Aplica cache.
-  - Valida preservacao de significado e elementos imutaveis.
-  - Retorna objetos de preview sem publicar no X.
-  - Interrompe fluxo obrigatorio quando Groq estiver indisponivel.
+  (`AIContentVariationService`)
+  - `generate_preview`: ponto de entrada, decide a estrategia pela contagem de
+    contas (`app.domain.policies`).
+  - `_generate_optional_preview`/`_generate_mandatory_preview`: os dois
+    caminhos (2-4 contas vs. 5+).
+  - `_get_or_generate_variations`: cache-then-Groq, completando com uma
+    segunda chamada a Groq se a primeira nao rendeu variacoes suficientes.
+  - `_request_valid_variations`: chama a Groq e filtra o resultado por
+    `app.domain.content_invariants` (URLs/hashtags/@mencoes/emojis/CTA
+    preservados exatamente) e por duplicidade.
+  - Cache: `_InMemoryVariationCache`, singleton em modulo, chave = SHA-256 de
+    `texto|contas ordenadas|modelo|versao do prompt`, TTL configuravel
+    (`INTELLIGENT_PUBLICATION_CACHE_TTL_SECONDS`, padrao 600s). Em memoria por
+    processo -- nao compartilhado entre replicas (mesmo trade-off aceito do
+    rate limiter), nunca serve dado incorreto porque a chave cobre todo o
+    contexto relevante.
 
 - `backend/app/schemas/intelligent_publication.py`
-  - Schemas Pydantic de request/response.
-  - Deve incluir texto original, contas selecionadas, previews por conta,
-    textos editados e flags de obrigatoriedade/opcionalidade.
+  - `IntelligentPublicationPreviewRequest` (text, twitter_account_ids,
+    apply_variation), `IntelligentPublicationPreviewResponse`
+    (original_text, strategy, is_variation_required, is_variation_applied,
+    cache_hit, warning, model, prompt_version, accounts).
 
 - `backend/app/routes/intelligent_publication.py`
-  - Endpoints de preview/confirmacao, se a implementacao separar do fluxo atual.
-  - Deve depender de `get_current_user`, service e `get_db`.
-  - Nao deve conter regra de negocio de geracao.
+  - `POST /intelligent-publication/preview` (`get_current_user`) -- delega
+    inteiramente ao service, sem regra de negocio na rota. Nunca cria `Post`;
+    a confirmacao reaproveita `POST /posts` com `rendered_texts`.
 
-- `backend/app/repositories/intelligent_publication_cache_repository.py`
-  - Somente se o cache for persistido em banco.
-  - Encapsula busca/criacao/invalidacao de cache.
+- `backend/alembic/versions/f3a4b5c6d7e8_add_rendered_text_to_post_accounts.py`
+  - Migration de `PostAccount.rendered_text` (nullable -- `NULL` para posts
+    antigos e para contas que nao passaram por variacao).
 
-- `backend/app/models/intelligent_publication_cache.py`
-  - Somente se o cache persistente for adotado.
-  - Deve conter hash do texto original, ids/assinatura das contas, versoes
-    geradas, metadata de modelo, tempo, tokens, custo quando aplicavel, versao
-    do prompt e expiracao.
+- Cache **nao** foi persistido em banco (decisao tecnica: TTL curto e volume
+  baixo nao justificam uma tabela + repository + migration extras; ver
+  "Inconsistencias e licoes" abaixo).
 
-- `backend/alembic/versions/*_add_rendered_text_to_post_accounts.py`
-  - Migration obrigatoria para `PostAccount.rendered_text`.
+Alteracoes em arquivos existentes:
 
-- `backend/alembic/versions/*_create_intelligent_publication_cache.py`
-  - Migration somente se cache persistente for implementado.
-
-Alteracoes futuras em arquivos existentes:
-
-- `backend/app/models/post_account.py`
-  - Adicionar `rendered_text: Mapped[str | None] = mapped_column(Text, nullable=True)`.
-
-- `backend/app/services/post_service.py`
-  - Em `publish_post`, usar `post_account.rendered_text or post.text`.
-  - Nao alterar idempotencia.
-  - Garantir que 5+ contas nao sejam publicadas sem variacoes validas quando a
-    regra obrigatoria se aplicar.
-
-- `backend/app/auth/dependencies.py`
-  - Adicionar factory para `AIContentVariationService`.
-
-- `backend/app/main.py`
-  - Registrar router de Publicacao Inteligente, se houver rota nova.
-
-- `backend/app/config/settings.py`
-  - Adicionar `GROQ_API_KEY`, modelo, timeout, versao do prompt e flags de
-    cache.
-
-- `backend/app/models/__init__.py`
-  - Exportar novos models, se cache persistente for criado.
+- `backend/app/models/post_account.py`: `rendered_text: Mapped[str | None]`.
+- `backend/app/services/post_service.py`: `create_post` valida
+  `rendered_texts` (obrigatoriedade, invariantes, duplicidade, tamanho) antes
+  de criar qualquer linha; `publish_post` usa
+  `post_account.rendered_text or post.text` e revalida a obrigatoriedade de
+  5+ contas uma terceira vez imediatamente antes de qualquer chamada ao X.
+- `backend/app/auth/dependencies.py`: `get_ai_content_variation_service`.
+- `backend/app/main.py`: router registrado; `GroqClient().validate_configuration()`
+  no lifespan de startup.
+- `backend/app/config/settings.py`: `GROQ_API_KEY`, `GROQ_MODEL`,
+  `GROQ_TIMEOUT_SECONDS`, `AI_CONTENT_VARIATION_PROMPT_VERSION`,
+  `INTELLIGENT_PUBLICATION_CACHE_ENABLED`,
+  `INTELLIGENT_PUBLICATION_CACHE_TTL_SECONDS`.
 
 Frontend:
 
-- `frontend/src/services/intelligentPublication.ts`
-  - Chamadas ao backend para preview/confirmacao.
-
-- `frontend/src/types/intelligentPublication.ts`
-  - Tipos de preview, variacoes por conta, request de confirmacao, estado de
-    obrigatoriedade e metadados exibiveis.
-
-- `frontend/src/components/IntelligentPublicationPreviewModal.tsx`
-  - Modal de revisao e edicao manual.
-
-- `frontend/src/hooks/useIntelligentPublication.ts`
-  - Query/mutation para gerar preview e confirmar.
-
-- Componente ou ajuste na tela de criacao de post:
-  - Botao "Publicacao Inteligente".
-  - Estado ativado por padrao ate 4 contas.
-  - Estado obrigatorio com 5+ contas.
-  - Aviso recomendando diversificacao automatica.
+- `frontend/src/services/intelligentPublication.ts` -- `POST
+  /intelligent-publication/preview`.
+- `frontend/src/types/intelligentPublication.ts` -- `IntelligentPublicationStrategy`,
+  `AccountPreview`, `IntelligentPublicationPreview`,
+  `IntelligentPublicationPreviewRequest`.
+- `frontend/src/components/intelligent-publication/IntelligentPublicationPreviewModal.tsx`
+  -- modal de revisao/edicao manual; mostra estrategia, aviso e um
+  `VariationAccountCard` editavel por conta; bloqueia confirmacao enquanto
+  houver texto vazio, acima do limite ou duplicado quando a variacao for
+  obrigatoria.
+- `frontend/src/components/intelligent-publication/VariationAccountCard.tsx`
+  -- textarea editavel por conta, contador de caracteres, indicador
+  "gerado por IA" vs. "texto original".
+- `frontend/src/components/intelligent-publication/VariationLoadingState.tsx`
+  -- estado de carregamento decorativo (SVG animado, Framer Motion).
+- `frontend/src/hooks/useIntelligentPublication.ts` -- mutation do preview.
+- `frontend/src/pages/NewPostPage.tsx` -- botao "Gerar Publicacao
+  Inteligente", ativado por padrao ate 4 contas, obrigatorio com 5+; ao
+  confirmar o modal, chama `useCreatePost` com `rendered_texts` e abre
+  `PublishOrScheduleDialog`.
 
 ## Fluxo Routes -> Services -> Repositories
 
@@ -559,16 +561,38 @@ Possiveis evolucoes:
 - Auditoria especifica de geracao por IA.
 - Metricas de qualidade e taxa de falha por modelo.
 
-## Inconsistencias e lacunas a nao corrigir nesta etapa
+## Validacao realizada
 
-- O frontend ainda nao possui fluxo de posts ou contas.
-- O backend ainda define schemas de post dentro da rota, embora exista pasta
-  `app.schemas`.
-- Nao ha testes automatizados observados.
-- Esta especificacao nao cria stubs de codigo porque a tarefa atual e
-  incorporar o roadmap oficial a documentacao permanente.
-- A especificacao anterior preparada antes do roadmap oficial tratava 2 a 4
-  contas como cenario de geracao de variacoes. O roadmap oficial corrige essa
-  regra: para 2 a 4 contas, publicar texto original; no frontend a Publicacao
-  Inteligente e opcional e ativada por padrao, com aviso recomendando
-  diversificacao automatica.
+- `alembic upgrade head`: migration de `PostAccount.rendered_text` aplicada
+  sem erro.
+- `python -c "import app.main"`: aplicacao importa e o startup valida a
+  configuracao da Groq sem erro (com `GROQ_API_KEY` configurada).
+- Suite `pytest`: 5 passaram, 1 falha pre-existente e nao relacionada (mesma
+  de todas as outras features -- dublê desatualizado de
+  `SubscriptionService.to_domain_context`).
+- Fluxo completo testado por script Python descartavel dentro do container
+  (removido apos a validacao, sem tocar a API real do X -- `XOAuthClient`
+  substituido por um dublê): preview com 1 conta (sem chamar Groq), preview
+  com 2-4 contas (variacao opcional aplicada e tambem com
+  `apply_variation=false`), preview com 5+ contas (obrigatorio, com e sem
+  cache-hit na segunda chamada), publicacao usando `rendered_text` por conta,
+  preservacao de URL/hashtag/@mencao/emoji validada rejeitando uma variacao
+  proposta que alterava a URL.
+- Frontend: `tsc --noEmit` e `npm run build` limpos.
+
+## Inconsistencias e lacunas conhecidas
+
+- O cache de variacoes e em memoria (por processo), nao persistido em banco
+  -- decisao tecnica aceita (ver "Arquitetura implementada"), nao uma lacuna
+  a corrigir sem pedido explicito.
+- Nao ha registro de custo monetario por chamada (a API da Groq usada nao
+  expoe custo diretamente na resposta) -- apenas tokens/latencia/modelo sao
+  registrados.
+- `PublicationContentType`/`app/domain/publication_cost.py` (suporte a
+  imagem/video/link com peso de custo diferente) permanece como codigo
+  preparatorio, nao conectado ao fluxo real de publicacao (todo post
+  consome 1 credito por conta, independente de ter midia).
+- O backend ainda define os schemas de `Post`/`ScheduledPost` dentro da rota
+  (`app/routes/post.py`), nao em `app.schemas` -- divergencia preexistente,
+  nao introduzida por esta funcionalidade (que ja segue o padrao novo em
+  `app/schemas/intelligent_publication.py`).
