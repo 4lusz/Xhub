@@ -39,7 +39,7 @@ export function useLogin() {
       loginRequest(email, password),
     onSuccess: (tokens) => {
       setTokens(tokens);
-      navigate("/", { replace: true });
+      navigate("/dashboard", { replace: true });
     },
     onError: (error: Error) => {
       toast({
@@ -70,7 +70,7 @@ export function useChangePassword() {
       setMustChangePassword(false);
       queryClient.invalidateQueries({ queryKey: currentUserKey });
       toast({ variant: "success", title: "Senha atualizada com sucesso" });
-      navigate("/", { replace: true });
+      navigate("/dashboard", { replace: true });
     },
     onError: (error: Error) => {
       toast({

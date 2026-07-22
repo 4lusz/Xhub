@@ -177,6 +177,30 @@ class Settings(BaseSettings):
     # `POST /posts/{id}/publish`.
     JITTER_MAX_ALLOWED_SECONDS: float = Field(default=120.0)
 
+    # ------------------------------------------------------------------ #
+    # Metricas de desempenho (tela "Resultados" -- ver
+    # docs/ROADMAP_METRICAS.md). Le dados reais da API do X (impressoes,
+    # curtidas, seguidores), que e paga por uso -- ao contrario de
+    # publicar (ja incluido no custo do plano), CADA coleta tem custo
+    # direto. `METRICS_POST_RETENTION_DAYS` limita a coleta a posts
+    # publicados recentemente (a maior parte do alcance de um post
+    # acontece nas primeiras 24-48h), controlando o custo agregado --
+    # posts mais antigos que a janela simplesmente param de ganhar
+    # snapshots novos, mas o ultimo valor coletado nunca e apagado.
+    # ------------------------------------------------------------------ #
+    METRICS_COLLECTION_ENABLED: bool = Field(default=True)
+    METRICS_COLLECTION_INTERVAL_SECONDS: int = Field(default=6 * 60 * 60)
+    METRICS_POST_RETENTION_DAYS: int = Field(default=14)
+    # Janela usada para calcular a media historica de alcance de uma
+    # conta (deteccao de anomalia, ver app.domain.metrics) -- pode olhar
+    # mais pra tras que a janela de coleta acima, ja que o ULTIMO
+    # snapshot de um post antigo continua no banco mesmo apos ele parar
+    # de ser recoletado.
+    METRICS_ANOMALY_LOOKBACK_DAYS: int = Field(default=90)
+    METRICS_ANOMALY_RECENT_WINDOW: int = Field(default=5)
+    METRICS_ANOMALY_MIN_TOTAL_POSTS: int = Field(default=8)
+    METRICS_ANOMALY_DROP_THRESHOLD: float = Field(default=0.5)
+
     # Compatibilidade com nomes antigos usados nas etapas iniciais.
     TWITTER_CLIENT_ID: str = Field(default="")
     TWITTER_CLIENT_SECRET: str = Field(default="")

@@ -22,6 +22,11 @@ const relativeFormatter = new Intl.RelativeTimeFormat("pt-BR", {
   numeric: "auto",
 });
 
+const compactNumberFormatter = new Intl.NumberFormat("pt-BR", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
 export function formatDateTime(value: string | Date): string {
   const date = typeof value === "string" ? new Date(value) : value;
   return dateTimeFormatter.format(date);
@@ -65,4 +70,20 @@ export function pluralize(count: number, singular: string, plural: string): stri
 export function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+/** Numero grande e legivel (ex.: 12400 -> "12,4 mil"). `null`/`undefined`
+ * vira "—" -- usado nas telas de Resultados para metricas que podem nao
+ * ter sido coletadas ainda. */
+export function formatCompactNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return compactNumberFormatter.format(value);
+}
+
+/** Variacao percentual com sinal (ex.: 0.256 -> "+26%", -0.5 -> "-50%").
+ * `null` (sem dado do periodo anterior para comparar) vira "—". */
+export function formatPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  const rounded = Math.round(value * 100);
+  return `${rounded > 0 ? "+" : ""}${rounded}%`;
 }

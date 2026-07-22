@@ -33,16 +33,21 @@ from app.config.settings import settings
 from app.core.logging_config import get_logger
 from app.database.session import SessionLocal
 from app.oauth.oauth_client import XOAuthClient
+from app.repositories.account_metric_snapshot_repository import (
+    AccountMetricSnapshotRepository,
+)
 from app.repositories.jitter_settings_repository import JitterSettingsRepository
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.post_account_repository import PostAccountRepository
 from app.repositories.post_media_repository import PostMediaRepository
+from app.repositories.post_metric_snapshot_repository import PostMetricSnapshotRepository
 from app.repositories.post_repository import PostRepository
 from app.repositories.scheduled_post_repository import ScheduledPostRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.twitter_account_repository import TwitterAccountRepository
 from app.repositories.user_repository import UserRepository
 from app.services.jitter_service import JitterService
+from app.services.metrics_service import MetricsService
 from app.services.post_service import PostService
 from app.services.scheduled_post_service import ScheduledPostService
 from app.services.subscription_service import SubscriptionService
@@ -198,6 +203,38 @@ def process_due_scheduled_posts() -> None:
         )
 
 
+def collect_account_and_post_metrics() -> None:
+    """Job executado periodicamente pelo `BackgroundScheduler` -- coleta
+    metricas de desempenho (seguidores, impressoes, curtidas) de toda
+    conta do X conectada na plataforma (ver docs/ROADMAP_METRICAS.md).
+
+    Reaproveita o mesmo `BackgroundScheduler` in-process do agendamento
+    de posts (nunca um worker/broker novo, ver `PostService`/claude.md,
+    secao de arquitetura) -- so mais um job, com seu proprio intervalo
+    (`settings.METRICS_COLLECTION_INTERVAL_SECONDS`, tipicamente bem
+    mais espacado que o de posts, ja que cada chamada tem custo real na
+    API do X, paga por uso).
+    """
+    if not settings.METRICS_COLLECTION_ENABLED:
+        return
+
+    db = SessionLocal()
+    try:
+        metrics_service = MetricsService(
+            AccountMetricSnapshotRepository(db),
+            PostMetricSnapshotRepository(db),
+            TwitterAccountRepository(db),
+            PostAccountRepository(db),
+            XOAuthClient(),
+        )
+        metrics_service.collect_all()
+        logger.info("Coleta de metricas de contas/posts concluida.")
+    except Exception:
+        logger.exception("Falha inesperada na coleta de metricas.")
+    finally:
+        db.close()
+
+
 def start_scheduler() -> BackgroundScheduler | None:
     """Inicia o worker in-process. Idempotente e sem efeito se
     `settings.SCHEDULER_ENABLED` estiver desligado."""
@@ -216,6 +253,14 @@ def start_scheduler() -> BackgroundScheduler | None:
         trigger="interval",
         seconds=settings.SCHEDULER_INTERVAL_SECONDS,
         id="process_due_scheduled_posts",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        collect_account_and_post_metrics,
+        trigger="interval",
+        seconds=settings.METRICS_COLLECTION_INTERVAL_SECONDS,
+        id="collect_account_and_post_metrics",
         max_instances=1,
         coalesce=True,
     )

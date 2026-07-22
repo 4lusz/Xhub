@@ -28,7 +28,7 @@ export function ProtectedRoute() {
   }
 
   if (!mustChangePassword && location.pathname === FIRST_ACCESS_PATH) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/dashboard" replace />;
   }
 
   return <Outlet />;

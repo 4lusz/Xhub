@@ -165,15 +165,44 @@ export function NewPostPage() {
               </div>
             )}
 
+            {accountCount === 0 && (
+              <div className="flex items-start gap-3 rounded-lg border border-dashed border-border px-4 py-3">
+                <Sparkles className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">Publicação Inteligente</p>
+                  <p className="text-xs text-muted-foreground">
+                    Selecione as contas de destino ao lado para saber se a variação automática de
+                    texto será usada — depende de quantas contas você escolher.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {accountCount === 1 && (
+              <div className="flex items-start gap-3 rounded-lg border border-dashed border-border px-4 py-3">
+                <Sparkles className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium text-foreground">Publicação Inteligente</p>
+                  <p className="text-xs text-muted-foreground">
+                    Com 1 conta selecionada, o texto original é publicado como está — não há
+                    necessidade de variação e a IA não é usada.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {isOptionalRange && (
               <div className="flex items-center justify-between rounded-lg border border-border bg-surface px-4 py-3">
                 <div className="flex items-start gap-3">
                   <Sparkles className="mt-0.5 h-4 w-4 text-primary" />
                   <div>
-                    <p className="text-sm font-medium text-foreground">Publicação Inteligente</p>
+                    <p className="text-sm font-medium text-foreground">
+                      Publicação Inteligente — opcional (2 a 4 contas)
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       Gera uma variação natural do texto para cada conta, reduzindo o risco de
-                      bloqueio por conteúdo repetitivo.
+                      bloqueio por conteúdo repetitivo. Você pode desativar e publicar o texto
+                      original em todas as contas.
                     </p>
                   </div>
                 </div>
@@ -184,10 +213,16 @@ export function NewPostPage() {
             {isMandatory && (
               <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3">
                 <Sparkles className="mt-0.5 h-4 w-4 text-warning" />
-                <p className="text-xs text-warning">
-                  Você selecionou {accountCount} contas. A partir de 5 contas, a Publicação
-                  Inteligente é obrigatória — o mesmo texto não pode ser publicado em todas elas.
-                </p>
+                <div>
+                  <p className="text-sm font-medium text-warning">
+                    Publicação Inteligente — obrigatória (5 ou mais contas)
+                  </p>
+                  <p className="text-xs text-warning">
+                    Você selecionou {accountCount} contas. A partir de 5, uma variação diferente é
+                    gerada para cada conta automaticamente — o mesmo texto não pode ser publicado
+                    em todas elas.
+                  </p>
+                </div>
               </div>
             )}
           </CardContent>

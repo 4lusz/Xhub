@@ -1,5 +1,90 @@
 # Changelog
 
+## 2026-07-22 - Site público de marketing (landing, sobre, contato, FAQ, legal)
+
+Pedido explícito do usuário, antes do lançamento em produção (domínio já
+adquirido): página principal pública com hero, funcionalidades e "como
+funciona"; páginas de Sobre, Contato (xhubplatform@gmail.com), FAQ,
+Política de Privacidade e Termos de Uso. Sem cadastro público — "Criar
+conta" leva para a página de Contato, refletindo a regra real de que
+toda conta é criada por um administrador.
+
+A raiz do site (`/`) deixou de ser a home autenticada e virou a landing
+page pública; a home autenticada foi renomeada para `/dashboard` (todos
+os redirects/links internos atualizados). Novo `MarketingLayout`,
+totalmente público, sem sidebar nem dependência de sessão.
+
+**Auditoria de segurança da página nova, pedida junto:** encontrado e
+corrigido um bug real de regressão — o redirect do callback OAuth do X
+(`GET /oauth/x/callback`) apontava para a raiz do frontend, que antes
+era a tela autenticada de contas conectadas; com a raiz virando a
+landing pública, o retorno de sucesso/erro da conexão deixaria de
+aparecer para o usuário. Corrigido para redirecionar especificamente
+para `/accounts`. Restante da auditoria: sem XSS (nenhum
+`dangerouslySetInnerHTML`/`innerHTML`), sem nova superfície de API
+(contato é só `mailto:`, sem formulário com backend), sem segredo/dado
+de teste vazado nas páginas novas, guarda de rotas íntegra (uma única
+rota pública em `/`). Recomendação registrada para o deploy (fora do
+escopo desta correção): headers de segurança do frontend em si
+(CSP/X-Frame-Options) devem ser configurados no proxy reverso/hospedagem
+estática, não via `<meta>` (que não cobre `frame-ancestors` e arriscaria
+quebrar o HMR do Vite em desenvolvimento).
+
+Validado: `tsc -b`/`npm run build` limpos, `pytest` sem regressão,
+redirect do OAuth confirmado ao vivo apontando para `/accounts`.
+
+## 2026-07-22 - Métricas de desempenho ("Resultados")
+
+Nova funcionalidade pedida explicitamente pelo usuário: tela de
+Resultados mostrando impressões, curtidas, respostas, republicações e
+seguidores por conta do X conectada, com tendência vs. período anterior
+e alerta automático quando o alcance de uma conta cai significativamente
+em relação ao histórico dela mesma. Detalhe completo em
+`docs/ROADMAP_METRICAS.md`.
+
+Coleta roda em background (mesmo `BackgroundScheduler` já usado para
+agendamento de posts, sem infraestrutura nova), limitada a posts
+publicados nos últimos 14 dias por padrão — a API do X é paga por uso,
+diferente de publicar, então a janela de coleta controla o custo
+agregado. Duas tabelas novas, append-only (`account_metric_snapshots`,
+`post_metric_snapshots`), mesmo princípio do `AuditLog`. Deliberadamente
+sem a peça de encurtador de link/rastreio de clique discutida junto —
+adiada por conflitar com a regra de imutabilidade de URL já existente
+(`app.domain.content_invariants`).
+
+Validado com 20 asserções (script descartável, dublê de `XOAuthClient`,
+nunca a API real do X), `pytest` sem regressão, migration real aplicada,
+rotas testadas ao vivo (IDOR, portfólio vazio, headers de segurança
+intactos), `tsc`/`build` do frontend limpos.
+
+## 2026-07-17 - Atualização de fastapi/starlette (CVEs corrigidos)
+
+Item que a auditoria de segurança tinha deixado como recomendação para
+depois (mudança de framework de maior superfície) — executado a pedido
+explícito do usuário, com autorização para corrigir qualquer regressão
+encontrada. `fastapi` 0.115.6→0.136.0, resolvendo `starlette` para
+1.3.1 (a mais recente disponível), eliminando os 7 CVEs conhecidos
+documentados em `docs/AUDITORIA_SEGURANCA.md`. Nenhuma regressão
+encontrada: suíte completa, headers de segurança, CORS, rate limiting
+em rota dinâmica, limite de corpo, handler de exceção e redirect do
+OAuth do X revalidados um por um após o rebuild — todos idênticos ao
+comportamento anterior. `pip-audit`: 34 → 9 vulnerabilidades conhecidas
+restantes (todas já documentadas como risco aceito).
+
+## 2026-07-17 - Correção: endpoint STATUS de upload de mídia (404 real)
+
+Bug real encontrado ao testar publicação de vídeo com a conta do X
+reconectada do usuário: `GET /2/media/upload/{id}/status` (usado para
+aguardar o processamento assíncrono de gif/vídeo) retornava `404`. A
+documentação oficial do X confirma que, ao contrário de
+`initialize`/`append`/`finalize` (caminhos dedicados v2), `STATUS`
+continua no padrão legado v1.1 — via query string no endpoint base
+(`GET /2/media/upload?command=STATUS&media_id={id}`). Corrigido em
+`app/oauth/oauth_client.py`. Detalhe completo em
+`docs/ROADMAP_MEDIA.md`/`backend/CHANGELOG.md`. Validado: `pytest`
+sem regressão, URL final conferida byte a byte contra a documentação
+oficial.
+
 ## 2026-07-17 - Auditoria completa de segurança
 
 Última auditoria do projeto antes de produção — ponta a ponta,

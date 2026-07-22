@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
+  BarChart3,
   CalendarClock,
   FileText,
   LayoutDashboard,
@@ -29,10 +30,11 @@ interface NavItemConfig {
 }
 
 const primaryNav: NavItemConfig[] = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/accounts", label: "Contas do X", icon: AtSign },
   { to: "/posts", label: "Histórico", icon: Sparkles },
   { to: "/scheduled", label: "Agendamentos", icon: CalendarClock },
+  { to: "/results", label: "Resultados", icon: BarChart3 },
 ];
 
 const secondaryNav: NavItemConfig[] = [

@@ -32,14 +32,19 @@ from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.twitter_account_repository import TwitterAccountRepository
 from app.repositories.user_repository import UserRepository
+from app.repositories.account_metric_snapshot_repository import (
+    AccountMetricSnapshotRepository,
+)
 from app.repositories.jitter_settings_repository import JitterSettingsRepository
 from app.repositories.post_account_repository import PostAccountRepository
 from app.repositories.post_media_repository import PostMediaRepository
+from app.repositories.post_metric_snapshot_repository import PostMetricSnapshotRepository
 from app.repositories.post_repository import PostRepository
 from app.repositories.scheduled_post_repository import ScheduledPostRepository
 from app.services.ai_content_variation_service import AIContentVariationService
 from app.services.jitter_service import JitterService
 from app.services.media_service import MediaService
+from app.services.metrics_service import MetricsService
 from app.services.post_service import PostService
 from app.services.scheduled_post_service import ScheduledPostService
 from app.services.audit_log_service import AuditLogService
@@ -114,6 +119,16 @@ def get_post_service(
         subscription_service=get_subscription_service(db),
         post_media_repository=PostMediaRepository(db),
         jitter_service=get_jitter_service(db),
+    )
+
+
+def get_metrics_service(db: Session = Depends(get_db)) -> MetricsService:
+    return MetricsService(
+        AccountMetricSnapshotRepository(db),
+        PostMetricSnapshotRepository(db),
+        TwitterAccountRepository(db),
+        PostAccountRepository(db),
+        XOAuthClient(),
     )
 
 

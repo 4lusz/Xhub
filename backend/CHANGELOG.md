@@ -1,3 +1,138 @@
+# CHANGELOG — Atualização de fastapi/starlette (CVEs corrigidos)
+
+A auditoria de segurança (`docs/AUDITORIA_SEGURANCA.md`) tinha deixado
+a atualização de `fastapi`/`starlette` como recomendação para uma etapa
+dedicada, por ser uma mudança de framework de maior superfície (toda
+rota/middleware/serialização) — não executada às pressas dentro da
+própria auditoria. Executada agora, a pedido explícito do usuário, com
+autorização para corrigir qualquer regressão encontrada.
+
+- **`requirements.txt`** — `fastapi` 0.115.6 → 0.136.0. Investigado com
+  `pip install --dry-run` antes de aplicar: essa versão já resolve
+  `starlette` para 1.3.1 (a mais recente disponível), eliminando os 7
+  CVEs conhecidos que a versão anterior (`starlette==0.41.3`, fixada
+  transitivamente por `fastapi==0.115.6`) carregava. Escolhida 0.136.0
+  em vez da mais recente (0.139.2) porque ambas resolvem para a mesma
+  versão de `starlette` — sem diferença de segurança em ir além, só
+  risco adicional de regressão.
+
+Validado com regressão completa (salto de 24 versões menores do
+FastAPI + mudança de versionamento maior `0.x → 1.x` do Starlette
+justificam ir além do `pytest`):
+- `docker compose build backend` sem cache — build limpo.
+- `pytest` 6/6, sem regressão funcional (nova
+  `StarletteDeprecationWarning` sobre `httpx` no `TestClient` — apenas
+  informativa, sobre uma futura descontinuação em ferramenta de teste,
+  sem efeito em código de produção).
+- Headers de segurança, CORS (preflight), login/JWT, rate limiting em
+  rota dinâmica (`/posts/{id}/publish`), limite de corpo de requisição
+  (413 em payload de 2MB + multipart de mídia isento), handler global
+  de exceção (404 padrão sem vazamento) e redirect do callback OAuth do
+  X — todos revalidados ao vivo, comportamento idêntico ao anterior.
+- `pip-audit`: 34 → 9 vulnerabilidades conhecidas restantes, todas já
+  documentadas individualmente em `docs/AUDITORIA_SEGURANCA.md` como
+  risco aceito (`ecdsa`/`pyasn1` — caminho RSA/EC nunca exercitado por
+  este projeto, que usa só HS256; `pip`/`pytest` — fora da superfície
+  de ataque de produção).
+
+# CHANGELOG — Correção: redirect do OAuth do X após site de marketing
+
+Bug real encontrado numa auditoria de segurança pedida explicitamente
+pelo usuário, logo após a construção do site público de marketing (ver
+`frontend/CHANGELOG.md`). Detalhe completo em `CHANGELOG.md` (raiz).
+
+**Causa raiz:** `app/routes/oauth.py::_frontend_redirect` redirecionava
+`GET /oauth/x/callback` para a raiz de `FRONTEND_URL` -- correto
+enquanto a raiz era a tela autenticada de contas conectadas, mas a raiz
+virou a landing page pública de marketing. O toast de sucesso/erro da
+conexão (`useOAuthCallbackFeedback`, montado só no layout autenticado)
+deixaria de aparecer para o usuário depois de conectar uma conta.
+
+**Correção:** redireciona especificamente para `FRONTEND_URL/accounts`
+(tela onde a conexão é iniciada, dentro do layout autenticado que
+captura os parâmetros de query).
+
+Validado: `pytest` sem regressão (6/6), redirect testado ao vivo
+(`GET /oauth/x/callback?state=...&error=...` retorna `307` com
+`Location` apontando para `/accounts`, não mais para a raiz).
+
+# CHANGELOG — Métricas de desempenho ("Resultados")
+
+Nova funcionalidade pedida explicitamente pelo usuário. Detalhe completo
+em `docs/ROADMAP_METRICAS.md`.
+
+- **`app/domain/metrics.py`** (novo) — funções puras: `compute_percent_change`
+  (variação percentual entre períodos) e `detect_reach_anomaly` (compara
+  o alcance recente de uma conta contra o histórico DELA MESMA — nunca
+  entre contas diferentes).
+- **`app/models/account_metric_snapshot.py`/`post_metric_snapshot.py`**
+  (novos) — duas tabelas append-only (mesmo princípio de `AuditLog`).
+  `PostMetricSnapshot.twitter_account_id` denormalizado a partir de
+  `PostAccount` para evitar JOIN na consulta de portfólio.
+- **`alembic/versions/a4b5c6d7e8f9_create_metric_snapshots_tables.py`**
+  (novo) — cria as duas tabelas.
+- **`app/oauth/oauth_client.py`** — dois métodos novos:
+  `get_account_metrics` (seguidores) e `get_tweet_metrics` (impressões/
+  curtidas/respostas/republicações/citações, até 100 tweets da MESMA
+  conta por chamada). `impression_count` (`organic_metrics`, exige
+  contexto de usuário) nunca levanta exceção só por não estar
+  autorizado para o tier/app atual — volta `None` nesse caso.
+  `_raise_for_media_error` renomeado para `_raise_for_x_api_error`
+  (sempre foi genérico, agora reaproveitado por 3 métodos em vez de 1).
+- **`app/services/metrics_service.py`** (novo, `MetricsService`) —
+  coleta (`collect_all`, chamada só pelo scheduler, commit/rollback por
+  conta) e consulta (portfólio/conta/post, sempre escopada ao usuário
+  autenticado, mesmo padrão de IDOR do resto do projeto).
+- **`app/scheduler.py`** — novo job `collect_account_and_post_metrics`
+  no MESMO `BackgroundScheduler` já existente (nunca um worker/broker
+  novo), intervalo próprio (`METRICS_COLLECTION_INTERVAL_SECONDS`,
+  padrão 6h).
+- **`app/routes/metrics.py`** + **`app/schemas/metrics.py`** (novos) —
+  `GET /metrics/accounts`, `GET /metrics/accounts/{id}`,
+  `GET /metrics/post-accounts/{id}`. Somente leitura.
+- **`app/config/settings.py`** — `METRICS_*` (habilitar/desabilitar,
+  intervalo de coleta, janela de retenção de posts, parâmetros de
+  detecção de anomalia).
+- **`app/repositories/post_account_repository.py`** — dois métodos
+  novos: `list_published_within_by_account` (janela de coleta) e
+  `list_published_by_account` (melhores posts).
+
+Validado: script Python descartável com 20 asserções (funções de
+domínio, coleta end-to-end com dublê de `XOAuthClient`, consulta de
+portfólio, bloqueio append-only, IDOR) — 20/20, criado/executado/apagado.
+`pytest` 6/6 sem regressão. Migration real aplicada
+(`f6a7b8c9d0e1 → a4b5c6d7e8f9`). Rotas testadas ao vivo: portfólio vazio
+sem erro, 404 para conta/post de outro usuário, 401 sem token, headers
+de segurança intactos.
+
+# CHANGELOG — Correção: endpoint STATUS de upload de mídia (404 real)
+
+Bug real encontrado na primeira publicação de vídeo com uma conta do X
+reconectada (créditos de mídia disponíveis na conta do usuário) —
+`PostAccount.error_message = "Upload de midia (STATUS): 404 - sem corpo
+de resposta"`. Detalhe completo em `docs/ROADMAP_MEDIA.md`.
+
+**Causa raiz:** `XOAuthClient._wait_for_media_processing` assumia que o
+passo `STATUS` do upload chunked de mídia seguiria o mesmo padrão de
+caminho dedicado das demais etapas (`GET /2/media/upload/{id}/status`)
+— suposição nunca antes testada contra a API real (documentado
+explicitamente no próprio código como pendente de validação). A
+documentação oficial do X
+(`docs.x.com/x-api/media/quickstart/media-upload-chunked`) confirma que
+STATUS é a única etapa que NÃO tem caminho dedicado no v2: continua no
+padrão legado v1.1, via query string no endpoint base
+(`GET /2/media/upload?command=STATUS&media_id={id}`).
+
+**Correção:** `app/oauth/oauth_client.py` — `_media_request` ganhou um
+parâmetro `query_params` opcional; `_wait_for_media_processing` passou
+a chamar `GET /2/media/upload?command=STATUS&media_id={id}` em vez do
+caminho dedicado inexistente. `initialize`/`append`/`finalize`
+permanecem inalterados (já confirmados corretos em teste real anterior).
+
+Validado: `pytest` sem regressão (6/6), `import app.main` limpo,
+construção da URL final confirmada byte a byte contra o formato exato
+da documentação oficial antes do rebuild do container.
+
 # CHANGELOG — Auditoria completa de segurança
 
 Última auditoria do projeto antes de produção. Relatório técnico

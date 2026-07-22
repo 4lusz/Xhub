@@ -36,11 +36,20 @@ def _safe_redirect_message(message: str) -> str:
 
 
 def _frontend_redirect(**params: str) -> RedirectResponse:
+    """Correcao (adicao do site publico de marketing em `FRONTEND_URL`
+    -- a raiz): antes redirecionava para a raiz do frontend, que era a
+    propria tela autenticada de contas conectadas. Com a raiz virando a
+    landing page publica, redirecionar para la faria o toast de
+    sucesso/erro do OAuth (`useOAuthCallbackFeedback`, montado apenas no
+    layout autenticado) nunca ser exibido. Redireciona para
+    `/accounts` -- tela autenticada onde a conexao foi iniciada -- que
+    continua dentro do layout que captura esses parametros de query."""
     if "message" in params:
         params["message"] = _safe_redirect_message(params["message"])
     query = urlencode(params)
-    separator = "&" if "?" in settings.FRONTEND_URL else "?"
-    return RedirectResponse(f"{settings.FRONTEND_URL}{separator}{query}")
+    frontend_accounts_url = f"{settings.FRONTEND_URL}/accounts"
+    separator = "&" if "?" in frontend_accounts_url else "?"
+    return RedirectResponse(f"{frontend_accounts_url}{separator}{query}")
 
 
 @router.get("/login", response_model=OAuthLoginResponse)

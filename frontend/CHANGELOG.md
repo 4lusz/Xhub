@@ -1,3 +1,68 @@
+# CHANGELOG — Site público de marketing (landing, sobre, contato, FAQ, legal)
+
+Pedido explícito do usuário. Detalhe completo em `CHANGELOG.md` (raiz).
+
+- **`src/layouts/MarketingLayout.tsx`** (novo) — header (logo, nav,
+  "Entrar") + footer (navegação, legal, e-mail) público, sem sidebar,
+  sem dependência de sessão.
+- **`src/pages/LandingPage.tsx`**, **`AboutPage.tsx`**,
+  **`ContactPage.tsx`**, **`FaqPage.tsx`** (accordion nativo via
+  `<details>`, sem dependência nova), **`PrivacyPolicyPage.tsx`**,
+  **`TermsOfUsePage.tsx`** (todas novas).
+- **`src/lib/constants.ts`** (novo) — `CONTACT_EMAIL`
+  (`xhubplatform@gmail.com`), compartilhado entre as páginas públicas.
+- **Renomeação da home autenticada de `/` para `/dashboard`** — a raiz
+  virou a landing page pública. Atualizados: `App.tsx` (rota),
+  `Sidebar.tsx` (nav), `routes/ProtectedRoute.tsx`/`AdminRoute.tsx`
+  (redirects), `hooks/useAuth.ts` (`useLogin`/`useChangePassword`
+  navegam para `/dashboard` após sucesso), `pages/NotFoundPage.tsx`
+  (agora auth-aware: `/dashboard` se logado, `/` se anônimo).
+
+**Bug real encontrado e corrigido na auditoria de segurança pedida
+junto:** `useOAuthCallbackFeedback` (mostra o toast de sucesso/erro ao
+conectar uma conta do X) só é montado no layout autenticado — como o
+backend redirecionava para a raiz do frontend (agora pública), esse
+retorno pararia de aparecer. Corrigido no backend
+(`app/routes/oauth.py`, ver `backend/CHANGELOG.md`) para redirecionar
+para `/accounts` em vez da raiz; comentário do hook atualizado para
+refletir isso.
+
+Validado: `tsc -b`/`npm run build` limpos, todas as rotas (públicas e
+autenticadas) testadas via `curl` retornando 200, redirect do OAuth
+confirmado ao vivo. Sem biblioteca nova adicionada.
+
+# CHANGELOG — Métricas de desempenho ("Resultados")
+
+Nova tela pedida explicitamente pelo usuário, consumindo a API nova de
+métricas do backend (ver `backend/CHANGELOG.md`/`docs/ROADMAP_METRICAS.md`).
+
+- **`src/types/metrics.ts`**, **`src/services/metrics.ts`**,
+  **`src/hooks/useMetrics.ts`** (novos) — tipos/chamadas/hooks TanStack
+  Query para portfólio, detalhe de conta e detalhe de post.
+- **`src/pages/ResultsPage.tsx`** (novo) — portfólio: tabela com todas as
+  contas conectadas, seguidores/impressões/curtidas/respostas/
+  republicações do período (seletor 7/30 dias), seta de tendência
+  (verde/vermelha) e badge "Alcance caiu" quando a conta tem anomalia
+  detectada. Clique na linha abre o drill-down da conta.
+- **`src/pages/AccountResultsDetailPage.tsx`** (novo) — histórico de
+  seguidores e lista dos melhores posts da conta; clicar num post abre
+  um dialog com a curva completa de métricas daquele tweet desde a
+  publicação.
+- **`src/lib/format.ts`** — dois helpers novos: `formatCompactNumber`
+  (ex.: 12400 → "12,4 mil") e `formatPercent` (ex.: 0.25 → "+25%").
+- **`src/components/layout/Sidebar.tsx`** — nova entrada "Resultados"
+  na navegação do cliente.
+- **`src/App.tsx`** — rotas `/results` e `/results/:accountId`.
+
+Sem biblioteca de gráficos nova — histórico apresentado em tabela/lista
+(consistente com o resto do projeto, que já usa tabelas extensivamente
+e nunca gráficos). Validado com `tsc -b` e `npm run build` limpos;
+**sem confirmação visual em navegador real** (sem ferramenta de
+automação de navegador disponível neste ambiente, mesma limitação já
+registrada em validações anteriores) — revisão completa feita por
+código (estados de loading/vazio/navegação) e servidor de
+desenvolvimento confirmado servindo as novas rotas sem erro.
+
 # CHANGELOG — Auditoria completa de segurança (frontend aprovado sem alteração)
 
 Última auditoria do projeto antes de produção. Relatório técnico

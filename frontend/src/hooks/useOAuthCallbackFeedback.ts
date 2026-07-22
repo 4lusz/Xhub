@@ -6,14 +6,17 @@ import { useQueryClient } from "@tanstack/react-query";
 import { twitterAccountsKey } from "@/hooks/useTwitterAccounts";
 
 /**
- * `GET /oauth/x/callback` (backend) redireciona de volta para a raiz
- * do frontend com `?oauth=x&status=connected` ou
+ * `GET /oauth/x/callback` (backend) redireciona de volta para
+ * `/accounts` com `?oauth=x&status=connected` ou
  * `?oauth=x&status=error&message=...` -- não existe uma rota dedicada
- * de callback no frontend, o backend sempre volta para `FRONTEND_URL`
- * (a raiz). Este hook fica no layout autenticado (ver
- * `layouts/DashboardLayout.tsx`) para capturar esses parâmetros
- * independentemente de qual página a raiz estiver renderizando no
- * momento, mostrar um retorno claro ao usuário e limpar a URL.
+ * de callback no frontend (ver `app.routes.oauth._frontend_redirect`).
+ * Este hook fica no layout autenticado (ver
+ * `layouts/DashboardLayout.tsx`, que engloba `/accounts` e todas as
+ * demais telas autenticadas) para capturar esses parâmetros, mostrar
+ * um retorno claro ao usuário e limpar a URL. Importante: a raiz `/`
+ * do site (`FRONTEND_URL`) é a landing page pública, fora do layout
+ * autenticado -- por isso o backend redireciona especificamente para
+ * `/accounts`, não para a raiz.
  */
 export function useOAuthCallbackFeedback() {
   const [searchParams, setSearchParams] = useSearchParams();

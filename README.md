@@ -470,5 +470,8 @@ docker compose exec backend pytest
 - [`docs/AUDITORIA_SEGURANCA.md`](docs/AUDITORIA_SEGURANCA.md) —
   auditoria completa de segurança (vulnerabilidades encontradas,
   correções, dependências com CVE avaliadas, cobertura OWASP Top 10).
+- [`docs/ROADMAP_METRICAS.md`](docs/ROADMAP_METRICAS.md) — métricas de
+  desempenho por conta/post (tela "Resultados"), coleta em background e
+  detecção de anomalia de alcance.
 - `backend/CHANGELOG.md` / `frontend/CHANGELOG.md` — histórico
   detalhado de mudanças por camada.

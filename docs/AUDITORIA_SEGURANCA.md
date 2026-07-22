@@ -59,7 +59,7 @@ models`/`domain`, middlewares leves em `app.middleware`).
 | URLs / rotas ocultas / enumeração | Aprovado sem alterações |
 | Docker (Dockerfile, compose, volumes, secrets) | Aprovado sem alterações |
 | Variáveis de ambiente / segredos | Aprovado sem alterações |
-| Dependências conhecidas | **4 pacotes atualizados** (CVEs corrigidos); 3 riscos residuais documentados e aceitos |
+| Dependências conhecidas | **5 pacotes atualizados** (CVEs corrigidos, incl. `fastapi`/`starlette` em etapa dedicada); 3 riscos residuais documentados e aceitos |
 | HTTP headers / CORS / cookies | **1 problema real corrigido** (ausência total de headers de segurança) |
 | Scheduler | Aprovado sem alterações |
 | API do X / Groq | Aprovado sem alterações |
@@ -281,7 +281,7 @@ pacotes antes da correção. Ação tomada por pacote:
 | `python-dotenv` | 1.0.1 (1 CVE) | **1.2.2** | Atualizado — uso restrito a `pydantic-settings` no boot, API inalterada |
 | `ecdsa` | 0.19.2 (`PYSEC-2026-1325`, timing attack Minerva) | 0.19.2 (sem correção upstream disponível) | **Não corrigido — risco aceito.** Dependência transitiva de `rsa` (usada por `python-jose[cryptography]` apenas para algoritmos RSA/EC). Esta aplicação usa exclusivamente **HS256** (`app/auth/jwt.py`, `settings.JWT_ALGORITHM`) — o caminho de código vulnerável (assinatura/verificação ECDSA) nunca é exercitado. Não há versão corrigida publicada pelo mantenedor do `ecdsa` para esta CVE. |
 | `pyasn1` | 0.4.8 (`PYSEC-2026-2263`) | 0.4.8 (bloqueado) | **Não corrigido — risco aceito, com causa raiz documentada.** Tentativa de pin explícito (`pyasn1==0.6.4`) quebra a instalação: `python-jose 3.4.0 depends on pyasn1<0.5.0`. Corrigir exigiria trocar a biblioteca de JWT (`python-jose` → `pyjwt`, por exemplo) — mudança arquitetural maior que uma correção de segurança pontual, fora do escopo desta auditoria ("corrija seguindo exatamente a arquitetura existente"). Mesmo raciocínio de exposição do item anterior: só usado pelo caminho RSA/EC do `python-jose`, nunca exercitado (HS256 apenas). |
-| `starlette` (via `fastapi`) | 0.41.3 (7 CVEs, correções apenas a partir de `0.47.2`/`1.0.1`+) | 0.41.3 (não corrigido) | **Não corrigido nesta etapa — recomendado como próxima prioridade.** Corrigir exige subir `fastapi` para uma versão que permita uma faixa de `starlette` mais nova — uma mudança de framework de grande superfície (toda rota, toda serialização de resposta, todo middleware da aplicação), que exige um ciclo de regressão dedicado para não violar a instrução de "não fazer alterações por tentativa e erro". Ver recomendação na seção final. |
+| `starlette` (via `fastapi`) | 0.41.3 (7 CVEs) | **1.3.1** (via `fastapi` 0.115.6→**0.136.0**) | **Corrigido em etapa dedicada** (2026-07-17, a pedido explícito do usuário, com autorização para corrigir qualquer regressão encontrada). `fastapi==0.136.0` já resolve `starlette` para a versão mais recente disponível (1.3.1), eliminando todos os CVEs. Validado com regressão completa — ver "Atualização" abaixo. |
 | `pytest` | 8.3.4 (`PYSEC-2026-1845`) | 8.3.4 (não corrigido) | **Risco aceito, severidade nula na prática.** Dependência exclusivamente de desenvolvimento/CI (`docker compose exec backend pytest`) — nunca é executada nem alcançável por nenhuma requisição HTTP; não faz parte da superfície de ataque de um sistema em produção. |
 | `pip` | 25.0.1 (6 CVEs) | 25.0.1 (não corrigido) | **Fora do escopo de `requirements.txt`** — ferramenta de build da imagem, não uma dependência de runtime da aplicação; nenhum endpoint invoca `pip`. |
 
@@ -447,7 +447,7 @@ dados persistentes.
 | A03 Injection | Auditado — aprovado (ORM parametrizado em 100% das queries, nenhum SQL bruto) |
 | A04 Insecure Design | Auditado — **3 correções aplicadas** (itens 2, 3, 4 acima) |
 | A05 Security Misconfiguration | Auditado — **1 correção aplicada** (item 1, headers) |
-| A06 Vulnerable and Outdated Components | Auditado — **4 pacotes atualizados**, 3 riscos residuais documentados (ver seção de dependências) |
+| A06 Vulnerable and Outdated Components | Auditado — **5 pacotes atualizados** (incl. `fastapi`/`starlette`), 3 riscos residuais documentados (ver seção de dependências) |
 | A07 Identification and Authentication Failures | Auditado — **1 correção aplicada** (item 5, timing) |
 | A08 Software and Data Integrity Failures | Auditado — aprovado (sem `eval`/deserialização insegura/CDN de terceiros para código executável) |
 | A09 Security Logging and Monitoring Failures | Auditado — aprovado (logging estruturado + `request_id` + handler global já existentes, reconfirmados) |
@@ -490,7 +490,56 @@ dados persistentes.
 - `git log`/`.gitignore` — confirmado que nenhum arquivo `.env` com
   segredo real está ou esteve no histórico do repositório.
 
-## Recomendação para a próxima etapa (não executada nesta auditoria)
+## Atualização (2026-07-17, mesmo dia): `fastapi`/`starlette` corrigido
+
+A recomendação original desta seção (ver abaixo, mantida como registro
+histórico) foi executada a pedido explícito do usuário, em uma mudança
+dedicada e isolada da auditoria original, com autorização explícita para
+corrigir qualquer regressão encontrada.
+
+**Investigação:** `pip install --dry-run` (sem alterar o ambiente) usado
+para testar candidatos antes de decidir — `fastapi==0.136.0` já resolve
+`starlette` para `1.3.1` (a versão mais recente disponível, que corrige
+todos os CVEs encontrados nesta auditoria), sem exigir nenhuma outra
+mudança de dependência (`python-multipart==0.0.32`, já atualizado
+nesta mesma auditoria, permanece compatível). Escolhida 0.136.0 (não a
+mais recente, 0.139.2) pelo mesmo raciocínio já usado para `cryptography`
+nesta auditoria: resolve para a mesma versão de `starlette` mais
+recente, então não há diferença de segurança em ir além — só risco
+adicional de regressão de uma versão ainda mais nova/menos testada.
+
+**Correção:** `backend/requirements.txt` — `fastapi` 0.115.6 → 0.136.0.
+
+**Validado (regressão completa, dado o tamanho do salto — 24 versões
+menores do FastAPI e a mudança de versionamento maior `0.x → 1.x` do
+Starlette):**
+- `docker compose build backend` sem cache — build limpo.
+- `pytest` 6/6, sem regressão (nova `StarletteDeprecationWarning` sobre
+  `httpx` no `TestClient` — apenas informativa, sobre uma futura
+  descontinuação em uma ferramenta de teste, não afeta nenhum código de
+  produção; sem ação necessária agora).
+- Headers de segurança (item 1 desta auditoria) — confirmados intactos.
+- CORS (preflight `OPTIONS` da origem do frontend) — resposta idêntica
+  a antes.
+- Login/JWT (`POST /auth/login`) — token emitido normalmente.
+- Rate limiting em endpoint dinâmico (`/posts/{id}/publish`, item 2
+  desta auditoria) — `429` confirmado em 24/40 requisições de flood,
+  mesmo comportamento de antes.
+- Limite de corpo de requisição (item 4 desta auditoria) — `413`
+  confirmado em corpo de 2MB; multipart de mídia continua isento
+  (`401`, chega até a autenticação normalmente).
+- Handler global de exceção — rota inexistente retorna `404` padrão,
+  sem vazamento de detalhe interno.
+- Redirect do callback OAuth do X (`GET /oauth/x/callback`) — `307`
+  com a mesma URL/mensagem de erro sanitizada de antes.
+- `pip-audit`: **34 → 9 vulnerabilidades conhecidas restantes**, todas
+  já documentadas individualmente na tabela acima como risco aceito
+  (`ecdsa`/`pyasn1`, código nunca exercitado por este projeto; `pip`,
+  ferramenta de build; `pytest`, dependência só de desenvolvimento).
+  `starlette` não aparece mais na lista.
+
+## Recomendação para a próxima etapa (histórico — já executada, ver
+"Atualização" acima)
 
 **Atualização de `fastapi`/`starlette`:** a versão atual (`fastapi
 0.115.6`, que fixa `starlette 0.41.3` transitivamente) tem CVEs
@@ -531,17 +580,21 @@ projeto, sem introduzir nenhuma infraestrutura nova nem funcionalidade
 de produto.
 
 A varredura de dependências encontrou débito técnico real (34
-vulnerabilidades conhecidas), das quais 16 foram eliminadas por
-atualização direta e as demais foram individualmente avaliadas: a
-maioria é inatingível pelo uso real da aplicação (algoritmos RSA/EC
-nunca exercitados, ferramentas de build/teste fora da superfície de
-ataque) ou está bloqueada por uma restrição de dependência que só se
-resolve com uma mudança de framework maior, recomendada como próxima
-prioridade dedicada.
+vulnerabilidades conhecidas). 25 foram eliminadas por atualização direta
+(16 na auditoria original + a atualização de `fastapi`/`starlette`,
+concluída em etapa dedicada no mesmo dia — ver "Atualização" acima). As
+9 restantes foram individualmente avaliadas e são inatingíveis pelo uso
+real da aplicação (algoritmos RSA/EC nunca exercitados, apenas HS256) ou
+são ferramentas de build/teste fora da superfície de ataque (`pip`,
+`pytest`).
 
-**Veredito:** com as correções desta auditoria aplicadas e validadas, o
-XHub não apresenta nenhuma vulnerabilidade de severidade Crítica ou Alta
-conhecida e não corrigida. A recomendação de atualização de
-`fastapi`/`starlette` deve ser tratada antes do lançamento em produção,
-mas como uma mudança planejada e testada isoladamente, não como um
-bloqueio para o restante do sistema, que está pronto.
+**Veredito:** com todas as correções desta auditoria aplicadas e
+validadas — incluindo a atualização de `fastapi`/`starlette` — o XHub
+não apresenta nenhuma vulnerabilidade de severidade Crítica, Alta ou
+Média conhecida e não corrigida. Os itens residuais restantes são todos
+de baixo risco prático (código nunca exercitado ou fora da superfície de
+ataque) e documentados individualmente. O sistema está pronto para
+produção do ponto de vista de segurança de código; os itens de
+infraestrutura de deploy (HTTPS/TLS, backup do banco, domínio real de
+produção, monitoramento) permanecem como responsabilidade da etapa de
+deploy em si, fora do escopo desta auditoria de código.

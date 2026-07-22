@@ -6,6 +6,7 @@ autogenerate) e permite `from app.models import User, Post, ...` no
 resto da aplicacao.
 """
 
+from app.models.account_metric_snapshot import AccountMetricSnapshot
 from app.models.audit_log import AuditLog
 from app.models.enums import (
     AuditAction,
@@ -21,6 +22,7 @@ from app.models.plan import Plan
 from app.models.post import Post
 from app.models.post_account import PostAccount
 from app.models.post_media import PostMedia
+from app.models.post_metric_snapshot import PostMetricSnapshot
 from app.models.refresh_token import RefreshToken
 from app.models.scheduled_post import ScheduledPost
 from app.models.subscription import Subscription
@@ -40,6 +42,8 @@ __all__ = [
     "OAuthSession",
     "RefreshToken",
     "JitterSettings",
+    "AccountMetricSnapshot",
+    "PostMetricSnapshot",
     "PostStatus",
     "PostAccountStatus",
     "SubscriptionStatus",

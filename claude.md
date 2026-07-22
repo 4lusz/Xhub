@@ -17,9 +17,11 @@
 > (auditoria funcional completa — problemas reais encontrados e corrigidos,
 > validações executadas), `docs/AUDITORIA_SEGURANCA.md` (auditoria completa
 > de segurança — vulnerabilidades reais encontradas e corrigidas,
-> dependências com CVE avaliadas, cobertura OWASP Top 10). Cada um
-> documenta a decisão técnica detalhada e a validação executada da sua
-> respectiva funcionalidade.
+> dependências com CVE avaliadas, cobertura OWASP Top 10),
+> `docs/ROADMAP_METRICAS.md` (métricas de desempenho por conta/post —
+> tela "Resultados", coleta em background, detecção de anomalia de
+> alcance). Cada um documenta a decisão técnica detalhada e a validação
+> executada da sua respectiva funcionalidade.
 
 ## 1. Objetivo do XHub
 
@@ -134,7 +136,8 @@ xhub/
 │       ├── database/               # engine, session, base declarativa
 │       ├── models/                 # ORM: User, TwitterAccount, Plan, Subscription,
 │       │                           #   Post, PostAccount, PostMedia, ScheduledPost,
-│       │                           #   OAuthSession, AuditLog, JitterSettings, RefreshToken
+│       │                           #   OAuthSession, AuditLog, JitterSettings, RefreshToken,
+│       │                           #   AccountMetricSnapshot, PostMetricSnapshot
 │       ├── domain/                 # regras puras (ver seção 2)
 │       ├── repositories/           # acesso a dados, sem regra de negócio
 │       ├── services/               # regra de negócio e orquestração
@@ -178,6 +181,8 @@ xhub/
 | `AuditLog` | `audit_logs` | Trilha administrativa, append-only, sem `updated_at`. |
 | `JitterSettings` | `jitter_settings` | Tabela singleton (sempre 1 linha): `min_seconds`/`max_seconds` do Jitter, editável pelo admin. |
 | `RefreshToken` | `refresh_tokens` | Token opaco, armazenado só como hash SHA-256. Rotação a cada uso. |
+| `AccountMetricSnapshot` | `account_metric_snapshots` | Série histórica de seguidores por conta, append-only. Coletada em background (ver seção 12-A). |
+| `PostMetricSnapshot` | `post_metric_snapshots` | Série histórica de impressões/curtidas/respostas/republicações por `PostAccount`, append-only. `twitter_account_id` denormalizado. |
 
 ## 6. Fluxo de autenticação
 
@@ -223,7 +228,11 @@ roteamento síncrono em `ProtectedRoute`.
    replay), troca `code` por tokens, busca o perfil autenticado no X,
    revalida quota só se for conta nova, faz upsert via
    `TwitterAccountService.save_connected_account` (cifra os tokens).
-   Redireciona (302) para `FRONTEND_URL` com `?oauth=x&status=connected|error`.
+   Redireciona (302) para `FRONTEND_URL/accounts` com
+   `?oauth=x&status=connected|error` (nunca para a raiz do frontend --
+   desde que o site público de marketing passou a ocupar `/`, a raiz
+   não está mais dentro do layout autenticado que exibe o retorno ao
+   usuário, ver `useOAuthCallbackFeedback`).
 3. `XOAuthClient` é HTTP puro (sem DB/regra de negócio): troca de código,
    refresh de token, perfil do usuário, publicação de tweet, upload de
    mídia chunked (INIT/APPEND/FINALIZE/STATUS, endpoint v2 nativo).
@@ -383,6 +392,12 @@ com muitas contas pode demorar mais — consequência esperada e aceita
 (analisada explicitamente; não compromete `max_instances=1`/`coalesce`,
 só atrasa proporcionalmente o início da próxima tick).
 
+O mesmo `BackgroundScheduler` também roda `collect_account_and_post_metrics`
+(ver `docs/ROADMAP_METRICAS.md`) — job independente, intervalo próprio
+(`METRICS_COLLECTION_INTERVAL_SECONDS`, bem mais espaçado que o de
+posts, já que cada leitura tem custo real na API do X), sem nenhum
+worker/broker adicional.
+
 ## 13. Jitter (atraso natural entre publicações)
 
 Objetivo: publicações em múltiplas contas do mesmo post não acontecem
@@ -422,13 +437,25 @@ post, só metadados/erro), Auditoria (log append-only, paginado), Jitter
 
 **Separação de rotas por papel (frontend, área recente):**
 `ClientOnlyRoute` redireciona admin → `/admin` sempre que ele tenta
-acessar `/`, `/accounts`, `/posts`, `/posts/new` ou `/scheduled` (contas
-admin nunca recebem `Subscription`, então essas telas terminariam em
-erro para elas). `AdminRoute` faz o espelho: cliente tentando `/admin/*`
-volta para `/`. `Sidebar.tsx` renderiza um array de navegação
-inteiramente diferente por papel (`adminNav` vs. `primaryNav`), nunca
-mesclado. `/profile`, `/settings` e `/first-access` são comuns aos dois
-papéis.
+acessar `/dashboard`, `/accounts`, `/posts`, `/posts/new`, `/scheduled`
+ou `/results` (contas admin nunca recebem `Subscription`, então essas
+telas terminariam em erro para elas). `AdminRoute` faz o espelho:
+cliente tentando `/admin/*` volta para `/dashboard`. `Sidebar.tsx`
+renderiza um array de navegação inteiramente diferente por papel
+(`adminNav` vs. `primaryNav`), nunca mesclado. `/profile`, `/settings` e
+`/first-access` são comuns aos dois papéis.
+
+**Site público de marketing (`/`, `/sobre`, `/contato`, `/faq`,
+`/privacidade`, `/termos`):** rotas totalmente públicas, fora de
+`ProtectedRoute`, servidas por `MarketingLayout` (header + footer
+próprios, sem sidebar) — nunca dependem de sessão nem tocam nenhum
+endpoint autenticado. `/` deixou de ser a home autenticada (que agora
+vive em `/dashboard`) para se tornar a landing page pública — decisão
+tomada ao construir essa área, replicando o padrão comum de SaaS
+(domínio raiz = marketing, `/dashboard` = produto). Não existe
+cadastro público: o CTA "Criar conta" leva para `/contato`
+(`xhubplatform@gmail.com`), refletindo a regra de negócio real (toda
+conta é criada por um administrador).
 
 ## 15. Autorização — papéis e dependencies
 
@@ -496,14 +523,16 @@ papéis.
   compartilhado entre réplicas/workers (mesmo trade-off aceito do rate
   limiter). Nunca serve dado errado (a chave inclui todo o contexto
   relevante), só tem uma taxa de acerto menor com múltiplos processos.
-- `fastapi==0.115.6` fixa `starlette==0.41.3` transitivamente, que tem
-  CVEs conhecidos sem correção disponível dentro da mesma faixa de
-  compatibilidade (ver `docs/AUDITORIA_SEGURANCA.md`, seção de
-  dependências). Corrigir exige subir `fastapi` para uma versão que
-  permita uma faixa de `starlette` mais nova — mudança de framework de
-  grande superfície (toda rota/middleware/serialização), recomendada
-  como próxima prioridade dedicada antes de produção, não executada às
-  pressas dentro da auditoria de segurança que a identificou.
+- Coleta de métricas (`docs/ROADMAP_METRICAS.md`) segue a documentação
+  oficial da API do X para o formato de `organic_metrics`/
+  `public_metrics`, mas ainda não foi validada contra uma coleta real
+  em produção (sem conta reconectada com posts recentes disponível no
+  momento da implementação) — confirmar na primeira coleta real, mesmo
+  princípio já registrado para o upload de mídia antes de ser validado.
+- Detecção de anomalia de alcance (`app.domain.metrics.detect_reach_anomaly`)
+  não normaliza por dia da semana/horário — pode gerar falso-positivo
+  em padrões semanais previsíveis (ex.: toda segunda de manhã). Aceito
+  para a primeira versão; refinamento possível, não crítico.
 - Não há cota de armazenamento por usuário nem limpeza automática de
   `PostMedia` nunca anexada a nenhum post (`post_id IS NULL`
   indefinidamente) — um usuário autenticado pode acumular arquivos

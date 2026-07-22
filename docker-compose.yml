@@ -10,7 +10,14 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xhub}
       POSTGRES_DB: ${POSTGRES_DB:-xhub}
     ports:
-      - "127.0.0.1:5432:5432"
+      # 5433 no host (nunca 5432): so uma conveniencia para conectar um
+      # cliente psql local ao banco de dentro do container -- o backend
+      # sempre fala com `db:5432` pela rede interna do Docker
+      # (DATABASE_URL), nunca por esta porta publicada, entao o numero
+      # aqui nao afeta o funcionamento da aplicacao. Evita colidir com
+      # um Postgres nativo do Windows (servico `postgres.exe`) que ja
+      # ocupa a 5432 nesta maquina, sem relacao com este projeto.
+      - "127.0.0.1:5433:5432"
     volumes:
       - xhub_pg_data:/var/lib/postgresql/data
     healthcheck:

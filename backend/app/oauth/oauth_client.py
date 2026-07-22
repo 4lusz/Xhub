@@ -68,6 +68,26 @@ class XPublishedPost:
     post_id: str
 
 
+@dataclass(frozen=True)
+class XAccountMetrics:
+    followers_count: int | None
+
+
+@dataclass(frozen=True)
+class XTweetMetrics:
+    tweet_id: str
+    # `impression_count` vem de `organic_metrics` (exige OAuth de
+    # contexto de usuario, ver docs/ROADMAP_METRICAS.md) -- `None`
+    # quando o tier/app atual nao autoriza esse campo especifico, nunca
+    # levanta excecao por isso (o restante das metricas, vindas de
+    # `public_metrics`, continua disponivel normalmente).
+    impression_count: int | None
+    like_count: int | None
+    reply_count: int | None
+    repost_count: int | None
+    quote_count: int | None
+
+
 class XOAuthClient:
     """Cliente HTTP para OAuth2, User Lookup, publicacao e upload de
     midia da API oficial do X.
@@ -244,7 +264,100 @@ class XOAuthClient:
             raise BadRequestException("Resposta invalida da API do X.")
 
         return self._parse_user(data)
-    
+
+    def get_account_metrics(self, access_token: str) -> XAccountMetrics:
+        """Metricas da propria conta autenticada (hoje, so seguidores) --
+        ver docs/ROADMAP_METRICAS.md. Chamado periodicamente pelo worker
+        de coleta (`MetricsService`), nunca em resposta direta a uma
+        requisicao HTTP do cliente."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        params = {"user.fields": "public_metrics"}
+
+        response = self._client.get(X_ME_URL, headers=headers, params=params)
+        self._raise_for_x_api_error(response, context="Metricas da conta")
+
+        payload = response.json()
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise BadRequestException("Resposta invalida da API do X.")
+
+        metrics = data.get("public_metrics")
+        followers_count = (
+            metrics.get("followers_count") if isinstance(metrics, dict) else None
+        )
+
+        return XAccountMetrics(
+            followers_count=followers_count if isinstance(followers_count, int) else None
+        )
+
+    def get_tweet_metrics(
+        self, access_token: str, tweet_ids: list[str]
+    ) -> list[XTweetMetrics]:
+        """Metricas de ate 100 tweets desta MESMA conta (o `access_token`
+        usado precisa ser o da propria conta autora dos tweets -- ver
+        docs/ROADMAP_METRICAS.md) numa unica chamada. Pede
+        `organic_metrics` (impressoes) e `public_metrics` (curtidas/
+        respostas/republicacoes/citacoes) juntos; nunca falha so por
+        `organic_metrics` nao estar autorizado para o tier/app atual --
+        nesse caso `impression_count` volta `None` para aquele tweet,
+        mas o restante das metricas continua normalmente."""
+        if not tweet_ids:
+            return []
+
+        if len(tweet_ids) > 100:
+            raise BadRequestException(
+                "Consulta de metricas de tweets aceita no maximo 100 ids por chamada."
+            )
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        params = {
+            "ids": ",".join(tweet_ids),
+            "tweet.fields": "organic_metrics,public_metrics",
+        }
+
+        response = self._client.get(X_POST_URL, headers=headers, params=params)
+        self._raise_for_x_api_error(response, context="Metricas de posts")
+
+        payload = response.json()
+        items = payload.get("data")
+        if not isinstance(items, list):
+            return []
+
+        results: list[XTweetMetrics] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            tweet_id = item.get("id")
+            if not isinstance(tweet_id, str):
+                continue
+
+            organic = item.get("organic_metrics")
+            organic = organic if isinstance(organic, dict) else {}
+            public = item.get("public_metrics")
+            public = public if isinstance(public, dict) else {}
+
+            impression_count = organic.get("impression_count")
+
+            results.append(
+                XTweetMetrics(
+                    tweet_id=tweet_id,
+                    impression_count=(
+                        impression_count if isinstance(impression_count, int) else None
+                    ),
+                    like_count=self._int_or_none(public.get("like_count")),
+                    reply_count=self._int_or_none(public.get("reply_count")),
+                    repost_count=self._int_or_none(public.get("retweet_count")),
+                    quote_count=self._int_or_none(public.get("quote_count")),
+                )
+            )
+
+        return results
+
+    @staticmethod
+    def _int_or_none(value: Any) -> int | None:
+        return value if isinstance(value, int) else None
+
     def publish_post(
         self,
         *,
@@ -468,14 +581,19 @@ class XOAuthClient:
         `check_after_secs` sugerido pelo proprio X a cada consulta, ate
         `settings.X_MEDIA_STATUS_MAX_WAIT_SECONDS` no total.
 
-        NOTA: o caminho `GET /2/media/upload/{id}/status` usado aqui
-        segue o mesmo padrao REST confirmado empiricamente para
-        initialize/append/finalize, mas NAO foi testado contra a API
-        real (so aciona para gif/video, que exigem processamento
-        assincrono -- imagem nunca chega a chamar este metodo, pois
-        `_media_finalize` nao retorna `processing_info` para imagem).
-        Validar contra uma conta real na primeira publicacao com
-        gif/video.
+        Correcao (teste real contra a API do X, 2026-07): a suposicao
+        original de que STATUS seguiria o mesmo padrao REST dedicado de
+        initialize/append/finalize (`GET /2/media/upload/{id}/status`)
+        estava ERRADA -- causava `404` (confirmado em producao, sem
+        corpo de resposta, publicacao de video marcada como FAILED).
+        Segundo a documentacao oficial
+        (https://docs.x.com/x-api/media/quickstart/media-upload-chunked),
+        STATUS e o unico passo que NAO tem path dedicado: continua no
+        padrao legado v1.1 (`command`/`media_id` como query string, no
+        proprio endpoint base), mesmo os outros tres passos usando o
+        padrao v2 novo. Corrigido para
+        `GET /2/media/upload?command=STATUS&media_id={id}` -- ver
+        `_media_request`.
         """
         deadline = time.monotonic() + settings.X_MEDIA_STATUS_MAX_WAIT_SECONDS
         info = processing_info
@@ -503,8 +621,9 @@ class XOAuthClient:
 
             response = self._media_request(
                 method="GET",
-                path=f"{media_id}/status",
+                path="",
                 access_token=access_token,
+                query_params={"command": "STATUS", "media_id": media_id},
                 context="Upload de midia (STATUS)",
             )
             payload = response.json()
@@ -520,13 +639,17 @@ class XOAuthClient:
         json_body: dict[str, Any] | None = None,
         multipart_fields: dict[str, Any] | None = None,
         files: dict[str, Any] | None = None,
+        query_params: dict[str, Any] | None = None,
         context: str,
     ) -> httpx.Response:
-        """Chamada HTTP generica para os endpoints v2 dedicados de
-        upload de midia (`/2/media/upload/...`) -- cada etapa
-        (initialize/append/finalize/status) usa um metodo/caminho e
-        formato de corpo diferentes, unificados aqui apenas para
-        tratamento de erro/timeout comum."""
+        """Chamada HTTP generica para os endpoints de upload de midia.
+
+        `initialize`/`append`/`finalize` usam o padrao v2 dedicado
+        (`path` com o `media_id`, ver `X_MEDIA_UPLOAD_URL`); `status` e
+        excecao -- continua no padrao legado v1.1, sem path dedicado,
+        so com `query_params` (`command`/`media_id`) no endpoint base
+        (`path=""`). Unificados aqui apenas para tratamento de
+        erro/timeout comum."""
         url = f"{X_MEDIA_UPLOAD_URL}/{path}" if path else X_MEDIA_UPLOAD_URL
         headers = {"Authorization": f"Bearer {access_token}"}
 
@@ -537,6 +660,9 @@ class XOAuthClient:
             merged_files: dict[str, Any] = dict(multipart_fields or {})
             merged_files.update(files or {})
             request_kwargs["files"] = merged_files
+
+        if query_params is not None:
+            request_kwargs["params"] = query_params
 
         try:
             response = self._client.request(
@@ -553,13 +679,16 @@ class XOAuthClient:
                 f"Erro de conexao ao enviar midia para o X ({context}): {exc}"
             ) from exc
 
-        self._raise_for_media_error(response, context=context)
+        self._raise_for_x_api_error(response, context=context)
         return response
 
-    def _raise_for_media_error(self, response: httpx.Response, *, context: str) -> None:
+    def _raise_for_x_api_error(self, response: httpx.Response, *, context: str) -> None:
         """Mesma preservacao de motivo original (`_extract_error_detail`)
-        e mapeamento de status HTTP ja usados em `publish_post`,
-        reaproveitados aqui para o endpoint de upload de midia."""
+        e mapeamento de status HTTP ja usados em `publish_post` --
+        reutilizado tambem por upload de midia e leitura de metricas
+        (`get_account_metrics`/`get_tweet_metrics`). Nome generico de
+        proposito: nao e especifico de midia, apesar de ter nascido
+        ali."""
         if response.status_code == 401:
             raise UnauthorizedException(
                 f"{context}: 401 Unauthorized da API do X: {self._extract_error_detail(response)}"

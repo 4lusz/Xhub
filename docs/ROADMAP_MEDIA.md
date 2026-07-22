@@ -96,11 +96,14 @@ Routes -> Services -> Repositories -> Models
     esperada, nunca derruba as demais contas do post).
 - `app/oauth/oauth_client.py` (`XOAuthClient`)
   - `upload_media`: protocolo oficial de upload chunked do X, no
-    endpoint v2 nativo (`POST https://api.x.com/2/media/upload`,
-    comando `INIT`/`APPEND`/`FINALIZE` via campo `command` no mesmo
-    endpoint multipart, `STATUS` via query string em um GET) -- chunks
-    de `settings.X_MEDIA_UPLOAD_CHUNK_SIZE_BYTES` (padrao 4MB) na
-    etapa `APPEND`, polling de `STATUS` ate
+    endpoint v2 nativo (`POST https://api.x.com/2/media/upload`).
+    `INITIALIZE`/`APPEND`/`FINALIZE` usam caminhos DEDICADOS por etapa
+    (`/initialize`, `/{id}/append`, `/{id}/finalize`); `STATUS` e
+    excecao -- continua no padrao legado v1.1, sem caminho dedicado,
+    via `GET /2/media/upload?command=STATUS&media_id={id}` (query
+    string no proprio endpoint base). Chunks de
+    `settings.X_MEDIA_UPLOAD_CHUNK_SIZE_BYTES` (padrao 4MB) na etapa
+    `APPEND`, polling de `STATUS` ate
     `settings.X_MEDIA_STATUS_MAX_WAIT_SECONDS` apenas quando o X
     retorna `processing_info` (caso assincrono de gif/video).
     Reaproveita `_extract_error_detail` (mesma preservacao do motivo
@@ -262,6 +265,26 @@ de depender disso em producao com clientes reais.
   - FINALIZE completo (apos creditos serem adicionados na conta do X)
     e a publicacao efetiva do tweet com midia continuam nao validados
     end-to-end nesta sessao.
+- **Bug real encontrado e corrigido (2026-07-17, primeira publicacao
+  real de video apos creditos disponiveis na conta do X do usuario):**
+  a suposicao acima (STATUS seguindo o mesmo padrao de caminho dedicado
+  das demais etapas) estava ERRADA. Falha observada em producao:
+  `PostAccount.error_message = "Upload de midia (STATUS): 404 - sem
+  corpo de resposta"`. Causa raiz: a documentacao oficial
+  (`docs.x.com/x-api/media/quickstart/media-upload-chunked`, verificada
+  nesta correcao) confirma que STATUS e a UNICA etapa que nao tem
+  caminho dedicado no v2 -- continua no padrao legado v1.1, via
+  `GET /2/media/upload?command=STATUS&media_id={id}` (query string no
+  endpoint base), mesmo `initialize`/`append`/`finalize` ja usando os
+  caminhos dedicados corretos. `XOAuthClient._wait_for_media_processing`/
+  `_media_request` corrigidos para montar a URL certa (novo parametro
+  `query_params` em `_media_request`, usado apenas por STATUS).
+  Validado: `pytest` sem regressao, `import app.main` limpo, e
+  construcao da URL final confirmada byte a byte
+  (`https://api.x.com/2/media/upload?command=STATUS&media_id=...`)
+  antes do rebuild do container. Publicacao real de video com a conta
+  reconectada do usuario pendente de nova tentativa para confirmar o
+  fluxo completo end-to-end (INIT/APPEND/FINALIZE/STATUS/publish).
 
 ## Fora de escopo desta implementacao
 

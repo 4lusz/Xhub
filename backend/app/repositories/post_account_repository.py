@@ -2,6 +2,7 @@
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -68,3 +69,37 @@ class PostAccountRepository(BaseRepository[PostAccount]):
             PostAccount.twitter_account_id == twitter_account_id,
         )
         return self.db.scalars(statement).first()
+
+    def list_published_within_by_account(
+        self, twitter_account_id: uuid.UUID, since: datetime
+    ) -> Sequence[PostAccount]:
+        """Posts publicados (com `x_post_id`) nesta conta desde `since` --
+        janela de retencao da coleta de metricas (ver
+        `settings.METRICS_POST_RETENTION_DAYS`/`MetricsService`). Posts
+        mais antigos que a janela param de ser coletados (o ultimo
+        snapshot conhecido permanece, nunca e apagado)."""
+        statement = select(PostAccount).where(
+            PostAccount.twitter_account_id == twitter_account_id,
+            PostAccount.status == PostAccountStatus.PUBLISHED,
+            PostAccount.published_at.is_not(None),
+            PostAccount.published_at >= since,
+        )
+        return self.db.scalars(statement).all()
+
+    def list_published_by_account(
+        self, twitter_account_id: uuid.UUID, *, limit: int = 50
+    ) -> Sequence[PostAccount]:
+        """Posts publicados mais recentes de uma conta -- usado para a
+        lista de "melhores posts" na tela de Resultados (ver
+        `MetricsService.get_account_detail`)."""
+        statement = (
+            select(PostAccount)
+            .where(
+                PostAccount.twitter_account_id == twitter_account_id,
+                PostAccount.status == PostAccountStatus.PUBLISHED,
+                PostAccount.published_at.is_not(None),
+            )
+            .order_by(PostAccount.published_at.desc())
+            .limit(limit)
+        )
+        return self.db.scalars(statement).all()
