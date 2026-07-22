@@ -1,0 +1,61 @@
+name: xhub
+
+# Compose de PRODUÇÃO -- distinto de docker-compose.yml (desenvolvimento
+# local, com bind mount e hot-reload). Diferenças principais:
+# - Sem serviço `frontend`: o build estático (`npm run build`) é servido
+#   diretamente pelo Nginx do host, fora do Docker.
+# - Sem bind mount do código do backend -- a imagem é reconstruída
+#   (`docker compose -f docker-compose.prod.yml build backend`) a cada
+#   atualização, em vez de refletir mudanças ao vivo.
+# - Postgres sem porta publicada no host -- só a rede interna do compose
+#   precisa alcançá-lo.
+# - Backend publicado apenas em 127.0.0.1 -- nunca diretamente na
+#   internet; só o Nginx do host (reverse proxy com TLS) fala com ele.
+# - Volume dedicado para `media_storage` (sem bind mount do código para
+#   persistir os uploads entre recriações do container).
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: xhub-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-xhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xhub}
+      POSTGRES_DB: ${POSTGRES_DB:-xhub}
+    volumes:
+      - xhub_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xhub -d xhub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xhub-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-xhub}:${POSTGRES_PASSWORD:-xhub}@db:5432/${POSTGRES_DB:-xhub}}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - xhub_media_storage:/app/media_storage
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  xhub_pg_data:
+  xhub_media_storage:
