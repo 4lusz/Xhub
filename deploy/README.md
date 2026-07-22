@@ -46,6 +46,29 @@ estrita de segredo forte em `app/config/settings.py`),
 confiável na frente do backend — sem isso, o rate limiter veria sempre
 o IP do Nginx, nunca o do cliente real).
 
+## ATENÇÃO: X-Forwarded-For deve ser SOBRESCRITO, nunca concatenado
+
+`proxy_set_header X-Forwarded-For $remote_addr;` — de propósito, **não**
+`$proxy_add_x_forwarded_for` (o padrão comum em tutoriais genéricos de
+Nginx, que só *acrescenta* o IP real ao que o cliente já mandou, em vez
+de substituir).
+
+**Causa raiz de uma vulnerabilidade real encontrada e corrigida em
+produção (2026-07-22, auditoria pós-deploy):** com
+`TRUST_PROXY_HEADERS=true` (necessário aqui, ver acima) e
+`$proxy_add_x_forwarded_for`, um cliente que manda seu próprio header
+`X-Forwarded-For: <qualquer coisa>` tinha esse valor preservado como o
+**primeiro** item da lista repassada ao backend — e
+`RateLimitMiddleware._client_key` usa exatamente o primeiro item. Como
+o valor era escolhido livremente pelo cliente, bastava variar esse
+header a cada requisição para contornar completamente o rate limit do
+login (confirmado ao vivo: 20 tentativas com 20 IPs falsos diferentes,
+zero bloqueadas). Corrigido sobrescrevendo o header com `$remote_addr`
+(a conexão TCP real, que o cliente não controla) — reconfirmado ao
+vivo: mesmo teste, exatamente 10 bloqueadas de 20 (o limite
+configurado). Ver `docs/AUDITORIA_SEGURANCA.md` para o registro
+completo.
+
 ## HTTPS
 
 Certificado Let's Encrypt via `certbot --nginx`, renovação automática

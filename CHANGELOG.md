@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-07-22 - Deploy de produção (xhub.app.br) + correção de bypass de rate limit
+
+Primeiro deploy real em VPS própria. Detalhe completo em
+`deploy/README.md`. Infraestrutura: Ubuntu 24.04 LTS, firewall (só 22/
+80/443), SSH só por chave, Docker Compose de produção
+(`docker-compose.prod.yml`, sem os atalhos de desenvolvimento —
+Postgres sem porta publicada, backend só em 127.0.0.1), Nginx como
+reverse proxy + TLS (Let's Encrypt, renovação automática) + servindo o
+build estático do frontend, backup diário automático do Postgres.
+
+**Vulnerabilidade real encontrada e corrigida numa auditoria de
+segurança pós-deploy pedida pelo usuário** (detalhe completo em
+`docs/AUDITORIA_SEGURANCA.md`): o Nginx configurado inicialmente
+*acrescentava* o IP real ao header `X-Forwarded-For` em vez de
+sobrescrevê-lo, permitindo que um atacante contornasse completamente o
+rate limit de login apenas forjando esse header a cada tentativa —
+confirmado ao vivo (20 tentativas com IPs forjados diferentes, 0
+bloqueadas antes da correção). Corrigido sobrescrevendo o header com o
+IP real da conexão TCP; revalidado ao vivo (10 de 20 bloqueadas,
+exatamente o limite configurado). Nenhuma mudança de código da
+aplicação foi necessária — só a configuração do Nginx.
+
+Confirmado sem outros achados: SQL injection (payloads clássicos
+tratados como dado comum), ausência de vazamento de stack trace,
+`DEBUG=false` efetivo, portas internas (backend/Postgres) inalcançáveis
+de fora.
+
 ## 2026-07-22 - Site público de marketing (landing, sobre, contato, FAQ, legal)
 
 Pedido explícito do usuário, antes do lançamento em produção (domínio já

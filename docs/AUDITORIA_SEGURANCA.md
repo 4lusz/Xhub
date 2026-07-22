@@ -490,6 +490,70 @@ dados persistentes.
 - `git log`/`.gitignore` — confirmado que nenhum arquivo `.env` com
   segredo real está ou esteve no histórico do repositório.
 
+## Atualização (2026-07-22): auditoria pós-deploy de produção
+
+Após o primeiro deploy real (VPS própria, `xhub.app.br`, Nginx como
+reverse proxy + TLS na frente do backend), o usuário pediu uma
+confirmação focada de segurança na infraestrutura de produção em si
+(rate limiting, SQL injection) — distinta da auditoria de código acima,
+que continua válida. Encontrada e corrigida **1 vulnerabilidade real,
+introduzida pelo próprio deploy** (não existia antes, pois não existia
+proxy reverso antes):
+
+### Bypass do rate limit de login via spoofing de `X-Forwarded-For` (Alta)
+
+**Causa raiz:** `TRUST_PROXY_HEADERS=true` é necessário em produção
+(sem isso, o rate limiter veria sempre o IP do Nginx, nunca o do
+cliente real — ver `app/middleware/rate_limit.py`, que já documentava
+esse requisito: "só deve ser habilitado quando a aplicação roda atrás
+de um proxy... que **reescreve** esse header, nunca repassa o valor
+recebido do cliente sem sobrescrever"). O Nginx configurado no deploy
+inicial usava `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`
+— o padrão comum em tutoriais genéricos, mas que **acrescenta** o IP
+real ao valor que o cliente já mandou, em vez de substituir. Como
+`RateLimitMiddleware._client_key` usa o **primeiro** item da lista
+(`forwarded_for.split(",", 1)[0]`), e o item do cliente ficava primeiro
+nessa concatenação, um atacante podia definir livremente seu próprio
+`X-Forwarded-For` a cada requisição e contornar o rate limit por
+completo.
+
+**Impacto:** rate limit de `/auth/login` (e de todos os demais
+endpoints sensíveis cobertos, ver item 2 da auditoria original)
+completamente inoperante contra um atacante que soubesse variar um
+único header HTTP — nenhuma outra defesa dependia dele (bcrypt continua
+lento, mas força bruta sem limite de tentativas é uma superfície real).
+
+**Correção:** `proxy_set_header X-Forwarded-For $remote_addr;` no
+Nginx — sobrescreve incondicionalmente com o IP da conexão TCP real
+(nunca controlado pelo cliente), em vez de concatenar. Nenhuma mudança
+de código da aplicação foi necessária — o comportamento esperado já
+estava corretamente documentado em `rate_limit.py`, só a configuração
+do proxy não seguia esse contrato. Ver `deploy/README.md` para o
+registro completo e o aviso para nunca reverter essa linha para o
+padrão `$proxy_add_x_forwarded_for`.
+
+**Validado ao vivo, antes e depois:**
+- Antes: 20 tentativas de login com 20 valores diferentes e forjados de
+  `X-Forwarded-For` — **0 de 20 bloqueadas** (bypass total confirmado).
+- Depois: mesmo teste — **10 de 20 bloqueadas**, exatamente o limite
+  configurado (`AUTH_RATE_LIMIT_MAX_REQUESTS=10`), com header forjado
+  completamente ignorado.
+
+**Restante da confirmação pós-deploy, sem achados:**
+- SQL injection: payloads clássicos (`' OR '1'='1' --`, `'; DROP TABLE
+  users;--`) testados no login e em parâmetros de path/query de rotas
+  autenticadas — sempre tratados como dado comum (nunca como SQL),
+  serviço no ar normalmente depois. Consistente com a auditoria de
+  código original (ORM parametrizado em 100% das consultas).
+- Erro em rota inexistente: `404` genérico, sem stack trace nem detalhe
+  interno.
+- `DEBUG=false` confirmado efetivo no `.env` de produção.
+- Porta do backend (8000) e do Postgres (5432): confirmado
+  inalcançáveis diretamente de fora — só o Nginx (127.0.0.1) e a rede
+  interna do Docker Compose os alcançam.
+- Firewall (`ufw`) e hardening do SSH (só chave, sem senha):
+  reconfirmados intactos.
+
 ## Atualização (2026-07-17, mesmo dia): `fastapi`/`starlette` corrigido
 
 A recomendação original desta seção (ver abaixo, mantida como registro
