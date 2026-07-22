@@ -1,3 +1,33 @@
+# CHANGELOG — Segundo fator de login (pergunta de segurança)
+
+Detalhe completo em `CHANGELOG.md` (raiz) e `docs/AUDITORIA_SEGURANCA.md`.
+
+- **Migration `b5c6d7e8f9a0`** — colunas `security_question`/
+  `security_answer_hash` (nullable) em `users`.
+- **`app/models/user.py`** — os dois campos novos.
+- **`app/domain/security_answer.py`** (novo) — `normalize_security_answer`,
+  função pura (strip + colapso de espaços + casefold), sem I/O.
+- **`app/services/auth_service.py`** — `requires_second_factor`,
+  `issue_pending_2fa_token` (JWT de 5 min, claim `stage: pending_2fa`),
+  `verify_security_answer`.
+- **`app/auth/dependencies.py`** — `_resolve_authenticated_user` rejeita
+  explicitamente qualquer token com `stage == "pending_2fa"` — sem essa
+  checagem o token pendente seria um bypass de autenticação completo.
+- **`app/services/user_service.py`** — `set_security_question`/
+  `clear_security_question`.
+- **`app/routes/auth.py`** — `login` retorna `TokenResponse |
+  SecondFactorRequiredResponse`; novas rotas
+  `POST /auth/verify-security-answer` (pública, rate-limited),
+  `POST`/`DELETE /auth/security-question` (admin-only).
+- **`app/middleware/rate_limit.py`** — `/auth/verify-security-answer`
+  adicionada aos paths com rate limit.
+
+Validado: suíte `pytest` (6/6, incluindo fixtures atualizadas em
+`conftest.py`/`test_routes_auth.py`) e teste ao vivo via curl contra o
+backend local (resposta errada rejeitada, resposta certa com
+diferença de maiúsculas/espaços aceita via normalização, token
+pendente confirmado rejeitado como Bearer normal).
+
 # CHANGELOG — Atualização de fastapi/starlette (CVEs corrigidos)
 
 A auditoria de segurança (`docs/AUDITORIA_SEGURANCA.md`) tinha deixado

@@ -50,4 +50,5 @@ def dummy_user() -> SimpleNamespace:
         role="client",
         is_blocked=False,
         must_change_password=False,
+        security_question=None,
     )

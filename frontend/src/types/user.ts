@@ -7,6 +7,9 @@ export interface User {
   role: UserRole;
   is_blocked: boolean;
   must_change_password: boolean;
+  /** Texto da pergunta de segurança configurada (2º fator de login,
+   * hoje restrito a administradores) -- `null` quando não configurada. */
+  security_question: string | null;
 }
 
 export interface CreateUserPayload {

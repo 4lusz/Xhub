@@ -6,9 +6,10 @@ de refresh tokens (`JWT_REFRESH_TOKEN_EXPIRE_DAYS` ja existia em
 `app.auth.refresh_token` para detalhes de armazenamento/seguranca.
 """
 
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, timedelta
 
-from app.auth.jwt import create_access_token
+from app.auth.jwt import create_access_token, decode_access_token
 from app.auth.password import hash_password, verify_password
 from app.auth.refresh_token import (
     generate_refresh_token,
@@ -16,9 +17,20 @@ from app.auth.refresh_token import (
     refresh_token_expiry,
 )
 from app.core.exceptions import ForbiddenException, UnauthorizedException
+from app.domain.security_answer import normalize_security_answer
 from app.models.user import User
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.user_repository import UserRepository
+
+# Segundo fator simples de login (pergunta de seguranca), hoje restrito
+# a administradores -- ver docs/AUDITORIA_SEGURANCA.md (auditoria
+# pos-deploy 2026-07-22). O token "pendente" emitido apos senha correta
+# (quando o usuario tem um segundo fator configurado) carrega a claim
+# `stage=pending_2fa` e tem validade curta -- nunca deve ser aceito como
+# token de acesso normal em nenhuma outra rota (ver bloqueio explicito
+# em `app.auth.dependencies._resolve_authenticated_user`).
+_PENDING_2FA_STAGE = "pending_2fa"
+_PENDING_2FA_EXPIRE_MINUTES = 5
 
 # Correcao (auditoria de seguranca -- enumeracao de usuarios via timing):
 # quando o e-mail nao existe, `authenticate` abaixo nunca chamava
@@ -74,6 +86,61 @@ class AuthService:
 
     def create_access_token(self, user: User) -> str:
         return create_access_token(str(user.id))
+
+    def requires_second_factor(self, user: User) -> bool:
+        """`True` somente quando o usuario configurou uma pergunta de
+        seguranca (ver `UserService.set_security_question`) -- opcional
+        por design, nunca bloqueia quem ainda nao configurou."""
+        return user.security_question is not None and user.security_answer_hash is not None
+
+    def issue_pending_2fa_token(self, user: User) -> str:
+        """Emitido no lugar do par access+refresh normal quando o login
+        (email+senha) e valido mas o usuario exige segundo fator.
+        Validade curta de proposito -- so serve para
+        `verify_security_answer` completar o login, nunca para acessar
+        qualquer outra rota."""
+        return create_access_token(
+            str(user.id),
+            expires_delta=timedelta(minutes=_PENDING_2FA_EXPIRE_MINUTES),
+            extra_claims={"stage": _PENDING_2FA_STAGE},
+        )
+
+    def verify_security_answer(self, *, pending_token: str, answer: str) -> User:
+        """Completa o login em duas etapas: valida o token pendente
+        (emitido por `issue_pending_2fa_token` apos senha correta) e a
+        resposta da pergunta de seguranca. Retorna o usuario -- a rota
+        emite o par de tokens normal (access + refresh) a partir daqui,
+        exatamente como um login comum bem sucedido."""
+        try:
+            payload = decode_access_token(pending_token)
+        except UnauthorizedException as exc:
+            raise UnauthorizedException(
+                "Sessao de verificacao invalida ou expirada. Faca login novamente."
+            ) from exc
+
+        if payload.get("stage") != _PENDING_2FA_STAGE:
+            raise UnauthorizedException("Sessao de verificacao invalida.")
+
+        user = self.user_repository.get(uuid.UUID(payload["sub"]))
+        if user is None:
+            raise UnauthorizedException("Sessao de verificacao invalida.")
+
+        if user.is_blocked:
+            raise ForbiddenException("Usuario bloqueado.")
+
+        if not self.requires_second_factor(user):
+            # Segundo fator foi removido entre a senha e esta etapa
+            # (ex.: admin desativou a pergunta em outra aba) -- trata
+            # como sessao de verificacao invalida, nunca aceita sem
+            # checagem.
+            raise UnauthorizedException("Sessao de verificacao invalida.")
+
+        if not verify_password(
+            normalize_security_answer(answer), user.security_answer_hash
+        ):
+            raise UnauthorizedException("Resposta de seguranca incorreta.")
+
+        return user
 
     def issue_refresh_token(self, user: User) -> str:
         raw_token = generate_refresh_token()

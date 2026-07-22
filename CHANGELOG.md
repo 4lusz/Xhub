@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-07-22 - Segundo fator de login (pergunta de segurança) + reforço operacional pós-deploy
+
+Pedido explícito do usuário após o deploy em produção, refletindo sobre
+o que mais precisava de atenção operacional. Detalhe completo em
+`docs/AUDITORIA_SEGURANCA.md`.
+
+**Segundo fator de login (pergunta de segurança)** — hoje restrito a
+administradores, opcional (login continua em uma etapa até ser
+configurado). Fluxo: `POST /auth/login` retorna um `pending_token` (JWT
+de 5 minutos, claim `stage: pending_2fa`) em vez do par de tokens
+normal quando o usuário tem pergunta configurada; `POST
+/auth/verify-security-answer` troca a resposta correta pelo par de
+tokens real. O ponto crítico de segurança: `pending_token` é
+explicitamente rejeitado por `get_current_user` (e por toda rota que
+dependa dele) — sem essa checagem, o token pendente funcionaria como
+bypass de autenticação completo. Resposta normalizada (case/espaço)
+antes de comparar via hash bcrypt (reaproveita `app/auth/password.py`,
+o mesmo usado para senha de conta). Configurável em
+Configurações → "Segundo fator de login".
+
+**Backup off-site criptografado** — o `pg_dump` diário (já existente)
+passou a ser criptografado com GPG (simétrico, AES256) antes de sair do
+disco e enviado por e-mail (Gmail SMTP via `msmtp`/`mutt`) para
+`xhubplatform@gmail.com`, além da cópia local de 14 dias já existente.
+A senha de descriptografia vive só em `/root/secrets/` na VPS **e**
+fora dela (o administrador guardou uma cópia em local seguro) — se
+guardasse só na VPS, perder a VPS tornaria os e-mails de backup
+inúteis.
+
+**Rotação de logs do Docker** — `docker-compose.prod.yml` ganhou
+`logging: driver: json-file` com `max-size: 10m`/`max-file: 5` em
+`db`/`backend` (sem limite antes, risco de encher o disco ao longo do
+tempo). Logs do próprio Nginx já tinham rotação (pacote padrão do
+Ubuntu, 14 dias, comprimido) — confirmado, nenhuma mudança necessária.
+
+**Monitoramento** — watchdog local (`/opt/xhub/watchdog.sh`, cron a
+cada 5 minutos) checa containers essenciais rodando, healthcheck do
+backend, o site público via HTTPS e uso de disco, alertando por e-mail
+(sem repetir o mesmo alerta enquanto o problema persistir). É um
+backstop, não um substituto: se a VPS inteira cair, o watchdog para
+junto — por isso a recomendação de também usar um serviço externo
+gratuito (ex.: UptimeRobot) apontando para `https://xhub.app.br`.
+
+**Tradução automática** — avaliada, não implementada como widget: o
+`<html lang="pt-BR">` já existente ativa a tradução nativa do
+Chrome/Edge sem nenhuma mudança de código. O widget clássico do Google
+Translate exigiria afrouxar a CSP (`script-src` liberando
+`unsafe-inline`/`unsafe-eval` e domínios do Google) — trade-off de
+segurança considerado desnecessário dado que a tradução nativa já
+cobre a maioria dos navegadores.
+
 ## 2026-07-22 - Deploy de produção (xhub.app.br) + correção de bypass de rate limit
 
 Primeiro deploy real em VPS própria. Detalhe completo em

@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.auth.password import generate_temporary_password, hash_password, verify_password
 from app.core.exceptions import ConflictException, ValidationException
+from app.domain.security_answer import normalize_security_answer
 from app.models.enums import UserRole
 from app.models.user import User
 from app.repositories.refresh_token_repository import RefreshTokenRepository
@@ -160,6 +161,46 @@ class UserService(BaseService[User]):
         )
         self.refresh_token_repository.revoke_all_for_user(user_id)
         return updated_user, temporary_password
+
+    def set_security_question(
+        self, user_id: uuid.UUID, *, question: str, answer: str
+    ) -> User:
+        """Configura (ou substitui) o segundo fator de login por
+        pergunta de seguranca (ver docs/AUDITORIA_SEGURANCA.md).
+        Restrito a administradores na camada de rota
+        (`get_current_admin`) -- este service nao checa papel de
+        proposito, mesma separacao de responsabilidade do resto do
+        projeto (autorizacao na rota, nunca no service)."""
+        user = self._ensure_user_exists(user_id)
+
+        question = question.strip()
+        if not question:
+            raise ValidationException("A pergunta de seguranca nao pode estar vazia.")
+        if len(question) > 200:
+            raise ValidationException(
+                "A pergunta de seguranca excede o limite de 200 caracteres."
+            )
+
+        normalized_answer = normalize_security_answer(answer)
+        if not normalized_answer:
+            raise ValidationException("A resposta de seguranca nao pode estar vazia.")
+
+        return self.user_repository.update(
+            user,
+            {
+                "security_question": question,
+                "security_answer_hash": hash_password(normalized_answer),
+            },
+        )
+
+    def clear_security_question(self, user_id: uuid.UUID) -> User:
+        """Remove o segundo fator de login -- o usuario volta a
+        autenticar so com email+senha."""
+        user = self._ensure_user_exists(user_id)
+        return self.user_repository.update(
+            user,
+            {"security_question": None, "security_answer_hash": None},
+        )
 
     def _normalize_email(self, email: str) -> str:
         normalized = email.strip().lower()

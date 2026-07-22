@@ -41,6 +41,7 @@ from app.domain.publication_cost import (
     credits_per_account_for_post,
     post_text_has_link,
 )
+from app.domain.security_answer import normalize_security_answer
 
 __all__ = [
     "ContentInvariants",
@@ -58,6 +59,7 @@ __all__ = [
     "LINK_CREDITS_PER_ACCOUNT",
     "credits_per_account_for_post",
     "post_text_has_link",
+    "normalize_security_answer",
     "MAX_ACCOUNTS_ACROSS_PLANS",
     "OFFICIAL_PLANS",
     "PLAN_AGENCY",

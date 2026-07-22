@@ -554,6 +554,56 @@ padrão `$proxy_add_x_forwarded_for`.
 - Firewall (`ufw`) e hardening do SSH (só chave, sem senha):
   reconfirmados intactos.
 
+## Atualização (2026-07-22, mesmo dia): reforço operacional pós-deploy
+
+Refletindo como responsável por segurança sobre o que mais faltava
+depois do deploy e da auditoria de infraestrutura acima, quatro lacunas
+puramente operacionais (não vulnerabilidades de código) foram
+identificadas e fechadas a pedido do usuário:
+
+**1. Sem cópia off-site do backup.** O backup diário do Postgres
+existia só no próprio disco da VPS — perder o servidor (disco,
+provedor, ataque) perderia dados e backup juntos. Corrigido: o dump é
+agora criptografado com GPG (simétrico, AES256) antes de sair do disco
+e enviado por e-mail (Gmail SMTP) para fora da VPS, mantendo a cópia
+local de 14 dias como primeira linha de defesa. A senha de
+descriptografia foi guardada pelo administrador **fora** da VPS — se
+ficasse só nela, a cópia off-site seria inútil no cenário exato que ela
+existe para cobrir (perda da VPS).
+
+**2. Logs do Docker sem limite.** `db`/`backend` usavam o driver
+`json-file` padrão do Docker, sem limite de tamanho — capaz de encher o
+disco ao longo de meses. Corrigido com `max-size`/`max-file` em
+`docker-compose.prod.yml`. Logs do Nginx já tinham rotação própria
+(pacote padrão do Ubuntu), confirmado sem necessidade de mudança.
+
+**3. Nenhum monitoramento/alerta.** Um container caído, o backend
+travado ou o disco cheio só seriam percebidos se alguém checasse
+manualmente. Adicionado um watchdog local (cron a cada 5 minutos)
+checando containers essenciais, healthcheck do backend, o site público
+via HTTPS e uso de disco, com alerta por e-mail (sem repetir o mesmo
+alerta enquanto o problema persistir). Limitação reconhecida e
+comunicada ao usuário: um watchdog rodando *na própria VPS* não detecta
+a VPS inteira cair — recomendado também um serviço externo gratuito
+(ex.: UptimeRobot) apontando para `https://xhub.app.br` como camada
+complementar.
+
+**4. Segundo fator de login ausente.** Login de administrador dependia
+só de e-mail+senha. Adicionada uma pergunta de segurança opcional (ver
+CHANGELOG do backend/frontend para o detalhe técnico) como segundo
+fator simples, com o ponto crítico de segurança sendo a rejeição
+explícita do token pendente por `get_current_user` — sem isso, o
+mecanismo seria um bypass de autenticação em vez de uma proteção
+adicional.
+
+**Avaliado e deliberadamente não alterado:** suporte a tradução
+automática do site para visitantes estrangeiros. `<html lang="pt-BR">`
+já ativa a tradução nativa do Chrome/Edge sem nenhuma mudança de
+código; o widget clássico do Google Translate exigiria afrouxar a CSP
+(liberar `unsafe-inline`/`unsafe-eval` em `script-src` e domínios do
+Google), reabrindo superfície de XSS por um ganho marginal. Não
+implementado.
+
 ## Atualização (2026-07-17, mesmo dia): `fastapi`/`starlette` corrigido
 
 A recomendação original desta seção (ver abaixo, mantida como registro

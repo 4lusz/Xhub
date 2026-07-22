@@ -186,6 +186,18 @@ def _resolve_authenticated_user(token: str, user_service: UserService) -> User:
     except UnauthorizedException as exc:
         raise _credentials_exception(exc.message) from exc
 
+    # Correcao (auditoria de seguranca -- 2o fator de login, ver
+    # docs/AUDITORIA_SEGURANCA.md): o token "pendente" emitido por
+    # `AuthService.issue_pending_2fa_token` (apos senha correta, antes
+    # da resposta de seguranca) tem a mesma estrutura de um access
+    # token normal -- sem esta checagem explicita, ele seria aceito
+    # aqui como um token de acesso valido, permitindo completar o login
+    # sem nunca responder a pergunta de seguranca. So
+    # `POST /auth/verify-security-answer` decodifica e aceita este
+    # estagio; em qualquer outra rota, e sempre invalido.
+    if payload.get("stage") == "pending_2fa":
+        raise _credentials_exception("Token invalido.")
+
     subject = payload["sub"]
 
     try:

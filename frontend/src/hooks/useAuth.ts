@@ -5,7 +5,11 @@ import {
   changePassword as changePasswordRequest,
   login as loginRequest,
   logout as logoutRequest,
+  removeSecurityQuestion as removeSecurityQuestionRequest,
+  setSecurityQuestion as setSecurityQuestionRequest,
+  verifySecurityAnswer as verifySecurityAnswerRequest,
 } from "@/services/auth";
+import { isSecondFactorRequired } from "@/types/auth";
 import { useAuthStore } from "@/stores/authStore";
 import { currentUserKey, useCurrentUser } from "@/hooks/useCurrentUser";
 import { useToast } from "@/hooks/use-toast";
@@ -37,6 +41,35 @@ export function useLogin() {
   return useMutation({
     mutationFn: ({ email, password }: { email: string; password: string }) =>
       loginRequest(email, password),
+    onSuccess: (response) => {
+      // Segundo fator (ver docs/AUDITORIA_SEGURANCA.md): a página de
+      // login lê `login.data` para decidir se mostra o desafio da
+      // pergunta -- aqui só navegamos/gravamos token no caso normal,
+      // nunca no caso de segundo fator pendente.
+      if (isSecondFactorRequired(response)) return;
+      setTokens(response);
+      navigate("/dashboard", { replace: true });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Não foi possível entrar",
+        description: error.message,
+      });
+    },
+  });
+}
+
+/** Segunda etapa do login (pergunta de segurança) -- mesmo tratamento
+ * de sucesso de um login normal em uma única etapa. */
+export function useVerifySecurityAnswer() {
+  const setTokens = useAuthStore((state) => state.setTokens);
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: ({ pendingToken, answer }: { pendingToken: string; answer: string }) =>
+      verifySecurityAnswerRequest(pendingToken, answer),
     onSuccess: (tokens) => {
       setTokens(tokens);
       navigate("/dashboard", { replace: true });
@@ -44,7 +77,48 @@ export function useLogin() {
     onError: (error: Error) => {
       toast({
         variant: "destructive",
-        title: "Não foi possível entrar",
+        title: "Resposta incorreta",
+        description: error.message,
+      });
+    },
+  });
+}
+
+export function useSetSecurityQuestion() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: ({ question, answer }: { question: string; answer: string }) =>
+      setSecurityQuestionRequest(question, answer),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: currentUserKey });
+      toast({ variant: "success", title: "Pergunta de segurança configurada" });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Não foi possível configurar",
+        description: error.message,
+      });
+    },
+  });
+}
+
+export function useRemoveSecurityQuestion() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: removeSecurityQuestionRequest,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: currentUserKey });
+      toast({ variant: "success", title: "Pergunta de segurança removida" });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Não foi possível remover",
         description: error.message,
       });
     },

@@ -53,6 +53,18 @@ class User(TimestampMixin, Base):
         Boolean, nullable=False, default=True
     )
 
+    # Segundo fator simples de login, hoje restrito a administradores
+    # (ver docs/AUDITORIA_SEGURANCA.md, auditoria pos-deploy 2026-07-22
+    # -- conta com controle total sobre a plataforma, sem MFA de
+    # verdade ate esta correcao). Opcional por design: `NULL` em ambas
+    # colunas significa que o usuario nao configurou um segundo fator
+    # ainda, e o login continua exigindo so email+senha para ele --
+    # nunca bloqueia o acesso de um admin que ainda nao configurou.
+    # `security_answer_hash` usa o mesmo esquema de `password_hash`
+    # (bcrypt via `app.auth.password`), nunca texto puro.
+    security_question: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    security_answer_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     twitter_accounts: Mapped[list["TwitterAccount"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )

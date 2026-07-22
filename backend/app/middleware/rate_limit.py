@@ -93,6 +93,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._static_rate_limited_paths = {
             f"{prefix}/auth/login",
             f"{prefix}/auth/refresh",
+            # Segundo fator de login (ver docs/AUDITORIA_SEGURANCA.md) --
+            # mesma logica de forca bruta se aplica a resposta da
+            # pergunta de seguranca quanto a senha em si.
+            f"{prefix}/auth/verify-security-answer",
             f"{prefix}/intelligent-publication/preview",
             f"{prefix}/media/upload",
             f"{prefix}/oauth/x/login",

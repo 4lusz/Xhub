@@ -9,7 +9,14 @@ def test_login_returns_token_pair(client):
         def authenticate(self, *, email: str, password: str) -> SimpleNamespace:
             assert email == "test@example.com"
             assert password == "secret"
-            return SimpleNamespace(id=uuid.UUID(int=1), must_change_password=False)
+            return SimpleNamespace(
+                id=uuid.UUID(int=1),
+                must_change_password=False,
+                security_question=None,
+            )
+
+        def requires_second_factor(self, user: SimpleNamespace) -> bool:
+            return user.security_question is not None
 
         def create_access_token(self, user: SimpleNamespace) -> str:
             assert user.id == uuid.UUID(int=1)
@@ -55,4 +62,5 @@ def test_get_current_user_profile_returns_user(client, dummy_user):
         "role": dummy_user.role,
         "is_blocked": dummy_user.is_blocked,
         "must_change_password": dummy_user.must_change_password,
+        "security_question": dummy_user.security_question,
     }

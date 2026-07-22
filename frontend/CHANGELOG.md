@@ -1,3 +1,23 @@
+# CHANGELOG — Segundo fator de login (pergunta de segurança)
+
+Detalhe completo em `CHANGELOG.md` (raiz).
+
+- **`types/auth.ts`** — `SecondFactorRequiredResponse`, `LoginResponse`
+  (união), `isSecondFactorRequired` (type guard).
+- **`types/user.ts`** — `security_question: string | null`.
+- **`services/auth.ts`** — `login` agora retorna `LoginResponse`;
+  `verifySecurityAnswer`, `setSecurityQuestion`, `removeSecurityQuestion`.
+- **`hooks/useAuth.ts`** — `useLogin` não grava token/navega quando a
+  resposta pede segundo fator; `useVerifySecurityAnswer`,
+  `useSetSecurityQuestion`, `useRemoveSecurityQuestion`.
+- **`pages/LoginPage.tsx`** — segunda etapa (`SecurityQuestionChallenge`)
+  renderizada condicionalmente quando o login pede segundo fator.
+- **`pages/SettingsPage.tsx`** — `SecurityQuestionCard` (admin-only):
+  configurar, substituir ou remover a pergunta.
+
+Validado: `tsc -b` limpo, `npm run build` sem erros, fluxo completo
+testado manualmente contra o backend local (ver CHANGELOG do backend).
+
 # CHANGELOG — Site público de marketing (landing, sobre, contato, FAQ, legal)
 
 Pedido explícito do usuário. Detalhe completo em `CHANGELOG.md` (raiz).
