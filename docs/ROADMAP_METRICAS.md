@@ -37,14 +37,52 @@ custo do plano) — cada leitura de métrica tem custo direto. Por isso:
   demais entre contas para essa comparação fazer sentido) — ver
   `app.domain.metrics.detect_reach_anomaly`.
 
+**Atualização (2026-07-22): coleta decrescente por idade do post
+(~45% menos leituras), pedida explicitamente pelo usuário depois de
+analisar o custo agregado.** Antes, todo post dentro da janela de
+retenção (14 dias) era recoletado na mesma frequência fixa
+(`METRICS_COLLECTION_INTERVAL_SECONDS`, 6h) do primeiro ao último dia —
+pagando pela mesma leitura de um post de 10 dias que praticamente não
+muda mais quanto de um post publicado há 2 horas. Corrigido com
+`app.domain.metrics.should_collect_post_metrics`: idade ≤72h → coleta a
+cada 12h (2x/dia); até 7 dias → a cada 24h (1x/dia); depois disso, **um
+último snapshot** ("final" — o post não muda o suficiente pra
+justificar custo contínuo) e nunca mais. O dado mostrado ao cliente
+nunca fica desatualizado de forma perceptível, porque o número já
+tinha estabilizado antes do corte.
+
+Mesma lógica aplicada aos seguidores de contas sem post publicado via
+XHub há `METRICS_ACCOUNT_INACTIVE_AFTER_DAYS` (30 dias, padrão) — em
+vez de continuar coletando 4x/dia uma conta parada, cai para
+`METRICS_ACCOUNT_INACTIVE_COLLECTION_INTERVAL_HOURS` (168h, 1x/semana).
+Deliberadamente **não** para de coletar por completo (diferente da
+proposta original do usuário): uma conta inativa pode voltar a publicar
+a qualquer momento, e parar de vez faria o número de seguidores
+congelar na tela de Resultados indefinidamente para quem só passou um
+tempo sem postar por ela, sem ter desconectado a conta. Volta à
+frequência normal automaticamente no próximo post publicado, sem
+nenhuma ação manual. Ver `app.domain.metrics.should_collect_account_metrics`.
+
+Ambas as regras são funções puras (sem I/O), validadas com um script
+descartável cobrindo os limites de cada janela (72h, 7 dias, snapshot
+final já tirado vs. pendente, conta inativa com/sem coleta prévia) —
+mesmo padrão de validação usado no resto do projeto.
+
 ## 3. Arquitetura implementada
 
 - `app/domain/metrics.py` — funções puras (sem I/O): `compute_percent_change`
-  (variação percentual entre dois valores) e `detect_reach_anomaly`
+  (variação percentual entre dois valores), `detect_reach_anomaly`
   (compara a média de impressões dos últimos N posts de uma conta
   contra a média do histórico anterior dela mesma; retorna
   `has_enough_data=False` em vez de alarmar sem base quando não há
-  posts suficientes).
+  posts suficientes), `should_collect_post_metrics`/
+  `should_collect_account_metrics` (coleta decrescente por idade do
+  post/inatividade da conta, ver atualização acima).
+- `PostMetricSnapshotRepository.get_latest_by_post_accounts` — último
+  snapshot de vários posts de uma vez (window function
+  `row_number() OVER (PARTITION BY post_account_id ...)`), evitando N+1
+  ao decidir, por post, se já passou o intervalo mínimo desde a última
+  coleta.
 - `app/models/account_metric_snapshot.py` /
   `app/models/post_metric_snapshot.py` — duas tabelas append-only
   (mesmo princípio de `AuditLog`: `update`/`delete`/`delete_by_id`

@@ -201,6 +201,22 @@ class Settings(BaseSettings):
     METRICS_ANOMALY_MIN_TOTAL_POSTS: int = Field(default=8)
     METRICS_ANOMALY_DROP_THRESHOLD: float = Field(default=0.5)
 
+    # Coleta decrescente por idade do post (~45% menos leituras pagas na
+    # API do X): a maior parte do alcance de um post se estabiliza nos
+    # primeiros dias, entao coletar na mesma frequencia pra sempre paga
+    # por numeros que ja pararam de mudar. Ver app.domain.metrics.
+    METRICS_POST_RECENT_WINDOW_HOURS: int = Field(default=72)
+    METRICS_POST_RECENT_INTERVAL_HOURS: int = Field(default=12)
+    METRICS_POST_AGING_WINDOW_DAYS: int = Field(default=7)
+    METRICS_POST_AGING_INTERVAL_HOURS: int = Field(default=24)
+
+    # Contas sem post publicado via XHub recentemente ainda tem seguidores
+    # coletados, so que numa frequencia bem menor (nao para de vez -- o
+    # cliente pode so estar sem postar por um tempo, nao ter abandonado a
+    # conta) -- volta a frequencia normal automaticamente no proximo post.
+    METRICS_ACCOUNT_INACTIVE_AFTER_DAYS: int = Field(default=30)
+    METRICS_ACCOUNT_INACTIVE_COLLECTION_INTERVAL_HOURS: int = Field(default=168)
+
     # Compatibilidade com nomes antigos usados nas etapas iniciais.
     TWITTER_CLIENT_ID: str = Field(default="")
     TWITTER_CLIENT_SECRET: str = Field(default="")

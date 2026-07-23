@@ -24,7 +24,13 @@ from app.config.settings import settings
 from app.core.crypto import decrypt_token, encrypt_token
 from app.core.exceptions import BaseAppException
 from app.core.logging_config import get_logger
-from app.domain.metrics import AnomalyResult, compute_percent_change, detect_reach_anomaly
+from app.domain.metrics import (
+    AnomalyResult,
+    compute_percent_change,
+    detect_reach_anomaly,
+    should_collect_account_metrics,
+    should_collect_post_metrics,
+)
 from app.models.post_metric_snapshot import PostMetricSnapshot
 from app.models.twitter_account import TwitterAccount
 from app.oauth.oauth_client import XOAuthClient
@@ -191,28 +197,47 @@ class MetricsService:
             )
             return
 
-        try:
-            account_metrics = self.x_oauth_client.get_account_metrics(access_token)
-            self.account_metric_repository.create(
-                {
-                    "twitter_account_id": twitter_account.id,
-                    "followers_count": account_metrics.followers_count,
-                }
-            )
-        except BaseAppException as exc:
-            logger.warning(
-                "Falha ao coletar metricas de conta.",
-                extra={"twitter_account_id": str(twitter_account.id), "error": exc.message},
-            )
+        now = datetime.now(UTC)
 
-        since = datetime.now(UTC) - timedelta(days=settings.METRICS_POST_RETENTION_DAYS)
+        if self._should_collect_account_metrics_now(twitter_account.id, now):
+            try:
+                account_metrics = self.x_oauth_client.get_account_metrics(access_token)
+                self.account_metric_repository.create(
+                    {
+                        "twitter_account_id": twitter_account.id,
+                        "followers_count": account_metrics.followers_count,
+                    }
+                )
+            except BaseAppException as exc:
+                logger.warning(
+                    "Falha ao coletar metricas de conta.",
+                    extra={"twitter_account_id": str(twitter_account.id), "error": exc.message},
+                )
+
+        since = now - timedelta(days=settings.METRICS_POST_RETENTION_DAYS)
         post_accounts = self.post_account_repository.list_published_within_by_account(
             twitter_account.id, since
+        )
+        latest_by_post_account = self.post_metric_repository.get_latest_by_post_accounts(
+            [post_account.id for post_account in post_accounts]
         )
         by_x_post_id = {
             post_account.x_post_id: post_account
             for post_account in post_accounts
             if post_account.x_post_id
+            and should_collect_post_metrics(
+                published_at=post_account.published_at,
+                last_collected_at=(
+                    latest_by_post_account[post_account.id].collected_at
+                    if post_account.id in latest_by_post_account
+                    else None
+                ),
+                now=now,
+                recent_window_hours=settings.METRICS_POST_RECENT_WINDOW_HOURS,
+                recent_interval_hours=settings.METRICS_POST_RECENT_INTERVAL_HOURS,
+                aging_window_days=settings.METRICS_POST_AGING_WINDOW_DAYS,
+                aging_interval_hours=settings.METRICS_POST_AGING_INTERVAL_HOURS,
+            )
         }
         if not by_x_post_id:
             return
@@ -243,6 +268,25 @@ class MetricsService:
                         "quote_count": tweet_metrics.quote_count,
                     }
                 )
+
+    def _should_collect_account_metrics_now(
+        self, twitter_account_id: uuid.UUID, now: datetime
+    ) -> bool:
+        last_post = self.post_account_repository.list_published_by_account(
+            twitter_account_id, limit=1
+        )
+        last_snapshot = self.account_metric_repository.get_latest_by_account(
+            twitter_account_id
+        )
+        return should_collect_account_metrics(
+            last_post_published_at=last_post[0].published_at if last_post else None,
+            last_collected_at=last_snapshot.collected_at if last_snapshot else None,
+            now=now,
+            inactive_after_days=settings.METRICS_ACCOUNT_INACTIVE_AFTER_DAYS,
+            inactive_collection_interval_hours=(
+                settings.METRICS_ACCOUNT_INACTIVE_COLLECTION_INTERVAL_HOURS
+            ),
+        )
 
     def _get_valid_access_token(self, twitter_account: TwitterAccount) -> str:
         """Mesma logica de renovacao de `PostService._get_valid_access_token`

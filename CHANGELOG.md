@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-07-22 - Coleta decrescente de métricas por idade do post (~45% menos leituras pagas)
+
+Pedido explícito do usuário, depois de refletir sobre o custo agregado
+da coleta de métricas na API do X (paga por uso). Detalhe completo em
+`docs/ROADMAP_METRICAS.md`.
+
+Antes, todo post dentro da janela de retenção (14 dias) era recoletado
+na mesma frequência fixa (6h) do primeiro ao último dia — pagando pela
+mesma leitura de um post de 10 dias (que já estabilizou) quanto de um
+publicado há 2 horas. Agora a frequência decai com a idade do post:
+≤72h → a cada 12h; até 7 dias → a cada 24h; depois disso, um último
+snapshot ("final") e nunca mais — o número exibido ao cliente nunca
+fica desatualizado de forma perceptível, porque já tinha estabilizado
+antes do corte.
+
+Mesma ideia aplicada aos seguidores de contas sem post publicado via
+XHub há 30+ dias: em vez de continuar coletando 4x/dia uma conta
+parada, cai para 1x/semana — **sem parar por completo** (ajuste
+deliberado sobre a proposta original: parar de vez faria o número
+congelar indefinidamente para uma conta que só está sem postar por um
+tempo, não desconectada; volta ao normal automaticamente no próximo
+post).
+
 ## 2026-07-22 - Segundo fator de login (pergunta de segurança) + reforço operacional pós-deploy
 
 Pedido explícito do usuário após o deploy em produção, refletindo sobre

@@ -9,8 +9,8 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, aliased
 
 from app.core.exceptions import ConflictException
 from app.models.post_account import PostAccount
@@ -88,3 +88,33 @@ class PostMetricSnapshotRepository(BaseRepository[PostMetricSnapshot]):
             .limit(1)
         )
         return self.db.scalars(statement).first()
+
+    def get_latest_by_post_accounts(
+        self, post_account_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, PostMetricSnapshot]:
+        """Mesmo que `get_latest_by_post_account`, mas para varios posts de
+        uma vez (usado pela coleta decrescente em `MetricsService` -- evita
+        N+1 ao decidir, por post, se ja passou o intervalo minimo desde a
+        ultima coleta)."""
+        if not post_account_ids:
+            return {}
+
+        row_number = (
+            func.row_number()
+            .over(
+                partition_by=PostMetricSnapshot.post_account_id,
+                order_by=PostMetricSnapshot.collected_at.desc(),
+            )
+            .label("row_number")
+        )
+        ranked = (
+            select(PostMetricSnapshot, row_number)
+            .where(PostMetricSnapshot.post_account_id.in_(post_account_ids))
+            .subquery()
+        )
+        latest = aliased(PostMetricSnapshot, ranked)
+        statement = select(latest).where(ranked.c.row_number == 1)
+        return {
+            snapshot.post_account_id: snapshot
+            for snapshot in self.db.scalars(statement).all()
+        }

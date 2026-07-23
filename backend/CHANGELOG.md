@@ -1,3 +1,28 @@
+# CHANGELOG — Coleta decrescente de métricas por idade do post
+
+Detalhe completo em `CHANGELOG.md` (raiz) e `docs/ROADMAP_METRICAS.md`.
+
+- **`app/config/settings.py`** — `METRICS_POST_RECENT_WINDOW_HOURS`
+  (72), `METRICS_POST_RECENT_INTERVAL_HOURS` (12),
+  `METRICS_POST_AGING_WINDOW_DAYS` (7), `METRICS_POST_AGING_INTERVAL_HOURS`
+  (24), `METRICS_ACCOUNT_INACTIVE_AFTER_DAYS` (30),
+  `METRICS_ACCOUNT_INACTIVE_COLLECTION_INTERVAL_HOURS` (168).
+- **`app/domain/metrics.py`** — `should_collect_post_metrics` (coleta
+  decrescente por idade, com "snapshot final" único depois da janela de
+  aging) e `should_collect_account_metrics` (throttle de seguidores em
+  conta inativa, nunca para por completo) — funções puras, sem I/O.
+- **`app/repositories/post_metric_snapshot_repository.py`** —
+  `get_latest_by_post_accounts` (bulk, window function), evita N+1 ao
+  decidir por post se já passou o intervalo mínimo.
+- **`app/services/metrics_service.py`** — `_collect_for_account` agora
+  filtra por essas regras antes de chamar a API do X, tanto para
+  seguidores quanto para métricas de post.
+
+Validado: suíte `pytest` (6/6, sem regressão) + script descartável
+cobrindo os limites de cada janela (72h, 7 dias, snapshot final já
+tirado vs. pendente, conta inativa com/sem coleta prévia) — removido
+após validar.
+
 # CHANGELOG — Segundo fator de login (pergunta de segurança)
 
 Detalhe completo em `CHANGELOG.md` (raiz) e `docs/AUDITORIA_SEGURANCA.md`.

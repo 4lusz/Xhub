@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 
 def compute_percent_change(current: int, previous: int) -> float | None:
@@ -92,3 +93,62 @@ def detect_reach_anomaly(
         recent_average=recent_average,
         drop_ratio=drop_ratio,
     )
+
+
+def should_collect_post_metrics(
+    *,
+    published_at: datetime,
+    last_collected_at: datetime | None,
+    now: datetime,
+    recent_window_hours: int,
+    recent_interval_hours: int,
+    aging_window_days: int,
+    aging_interval_hours: int,
+) -> bool:
+    """Coleta decrescente por idade do post: a maior parte do alcance se
+    estabiliza nos primeiros dias, entao coletar na mesma frequencia pra
+    sempre paga (na API do X) por numeros que ja pararam de mudar.
+
+    - Idade <= `recent_window_hours` (ex.: 72h): coleta a cada
+      `recent_interval_hours` (ex.: 12h, 2x/dia).
+    - Ate `aging_window_days` (ex.: 7 dias): coleta a cada
+      `aging_interval_hours` (ex.: 24h, 1x/dia).
+    - Depois disso: UM ultimo snapshot ("final", o post nao muda mais o
+      suficiente pra justificar o custo) e nunca mais.
+    """
+    if last_collected_at is None:
+        return True
+
+    age = now - published_at
+    if age <= timedelta(hours=recent_window_hours):
+        return (now - last_collected_at) >= timedelta(hours=recent_interval_hours)
+    if age <= timedelta(days=aging_window_days):
+        return (now - last_collected_at) >= timedelta(hours=aging_interval_hours)
+
+    # Passou da janela de "aging": so coleta mais uma vez (o snapshot
+    # final) se o ultimo snapshot registrado for de ANTES de cruzar essa
+    # janela -- ou seja, ainda nao tiramos o final.
+    return (last_collected_at - published_at) < timedelta(days=aging_window_days)
+
+
+def should_collect_account_metrics(
+    *,
+    last_post_published_at: datetime | None,
+    last_collected_at: datetime | None,
+    now: datetime,
+    inactive_after_days: int,
+    inactive_collection_interval_hours: int,
+) -> bool:
+    """Contas sem post publicado via XHub ha mais de `inactive_after_days`
+    (ou nunca publicaram) tem os seguidores coletados numa frequencia bem
+    menor (`inactive_collection_interval_hours`, ex.: 1x/semana) em vez de
+    parar de vez -- volta ao normal automaticamente assim que a conta
+    publica de novo, sem exigir nenhuma acao manual."""
+    is_inactive = last_post_published_at is None or (
+        now - last_post_published_at > timedelta(days=inactive_after_days)
+    )
+    if not is_inactive:
+        return True
+    if last_collected_at is None:
+        return True
+    return (now - last_collected_at) >= timedelta(hours=inactive_collection_interval_hours)
