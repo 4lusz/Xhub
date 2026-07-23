@@ -3,7 +3,7 @@
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.post_media import PostMedia
@@ -24,6 +24,28 @@ class PostMediaRepository(BaseRepository[PostMedia]):
         )
         return self.db.scalars(statement).all()
 
+    def list_for_post_account(
+        self, *, post_id: uuid.UUID, post_account_id: uuid.UUID
+    ) -> Sequence[PostMedia]:
+        """Midia que se aplica a UMA conta especifica de um post: a
+        compartilhada entre todas (`post_account_id IS NULL`) mais a
+        exclusiva dessa conta, se houver (ver
+        `app.models.enums.PostCompositionMode`). Usado por
+        `PostService.publish_post` para saber o que enviar ao X para
+        cada conta."""
+        statement = (
+            select(PostMedia)
+            .where(
+                PostMedia.post_id == post_id,
+                or_(
+                    PostMedia.post_account_id.is_(None),
+                    PostMedia.post_account_id == post_account_id,
+                ),
+            )
+            .order_by(PostMedia.position)
+        )
+        return self.db.scalars(statement).all()
+
     def list_by_ids_and_user(
         self, media_ids: Sequence[uuid.UUID], user_id: uuid.UUID
     ) -> Sequence[PostMedia]:
@@ -38,6 +60,18 @@ class PostMediaRepository(BaseRepository[PostMedia]):
         return self.db.scalars(statement).all()
 
     def attach_to_post(
-        self, media: PostMedia, *, post_id: uuid.UUID, position: int
+        self,
+        media: PostMedia,
+        *,
+        post_id: uuid.UUID,
+        position: int,
+        post_account_id: uuid.UUID | None = None,
     ) -> PostMedia:
-        return self.update(media, {"post_id": post_id, "position": position})
+        return self.update(
+            media,
+            {
+                "post_id": post_id,
+                "position": position,
+                "post_account_id": post_account_id,
+            },
+        )

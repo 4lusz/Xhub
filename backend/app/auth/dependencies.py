@@ -29,6 +29,9 @@ from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.oauth_session_repository import OAuthSessionRepository
 from app.repositories.plan_repository import PlanRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
+from app.repositories.revoked_access_token_repository import (
+    RevokedAccessTokenRepository,
+)
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.twitter_account_repository import TwitterAccountRepository
 from app.repositories.user_repository import UserRepository
@@ -56,6 +59,15 @@ from app.services.user_service import UserService
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+# Variante que nunca levanta 401 sozinha (retorna `None` se o header
+# Authorization estiver ausente/malformado) -- usada apenas por
+# `POST /auth/logout`, que deve sempre suceder (revogando o refresh
+# token do corpo) mesmo sem um access token valido presente; quando
+# presente, tambem revoga o access token (auditoria de seguranca --
+# item 4, JWT).
+oauth2_scheme_optional = OAuth2PasswordBearer(
+    tokenUrl="/api/v1/auth/login", auto_error=False
+)
 
 
 def _credentials_exception(
@@ -68,12 +80,22 @@ def _credentials_exception(
     )
 
 
+def get_revoked_access_token_repository(
+    db: Session = Depends(get_db),
+) -> RevokedAccessTokenRepository:
+    return RevokedAccessTokenRepository(db)
+
+
 def get_user_service(db: Session = Depends(get_db)) -> UserService:
     return UserService(UserRepository(db), RefreshTokenRepository(db))
 
 
 def get_auth_service(db: Session = Depends(get_db)) -> AuthService:
-    return AuthService(UserRepository(db), RefreshTokenRepository(db))
+    return AuthService(
+        UserRepository(db),
+        RefreshTokenRepository(db),
+        RevokedAccessTokenRepository(db),
+    )
 
 
 def get_plan_service(db: Session = Depends(get_db)) -> PlanService:
@@ -173,7 +195,11 @@ def get_audit_log_service(db: Session = Depends(get_db)) -> AuditLogService:
     return AuditLogService(AuditLogRepository(db))
 
 
-def _resolve_authenticated_user(token: str, user_service: UserService) -> User:
+def _resolve_authenticated_user(
+    token: str,
+    user_service: UserService,
+    revoked_access_token_repository: RevokedAccessTokenRepository,
+) -> User:
     """Decodifica o token, carrega o usuario e garante que a CONTA nao
     esta bloqueada. NAO verifica primeiro acesso obrigatorio (ver
     `ensure_password_change_not_required`) -- usado tanto por
@@ -185,6 +211,17 @@ def _resolve_authenticated_user(token: str, user_service: UserService) -> User:
         payload = decode_access_token(token)
     except UnauthorizedException as exc:
         raise _credentials_exception(exc.message) from exc
+
+    # Correcao (auditoria de seguranca -- item 4, JWT): um access token
+    # revogado explicitamente (logout, ver `AuthService.revoke_access_token`)
+    # nunca deve continuar sendo aceito so porque ainda nao expirou
+    # naturalmente. Sem esta checagem, o token permanecia valido por ate
+    # `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` apos o logout -- stateless
+    # "por design", mas incompativel com a exigencia de invalidacao
+    # imediata pos-logout.
+    jti = payload.get("jti")
+    if jti and revoked_access_token_repository.is_revoked(uuid.UUID(jti)):
+        raise _credentials_exception("Token invalido.")
 
     # Correcao (auditoria de seguranca -- 2o fator de login, ver
     # docs/AUDITORIA_SEGURANCA.md): o token "pendente" emitido por
@@ -223,19 +260,25 @@ def _resolve_authenticated_user(token: str, user_service: UserService) -> User:
 def get_current_user_for_password_change(
     token: str = Depends(oauth2_scheme),
     user_service: UserService = Depends(get_user_service),
+    revoked_access_token_repository: RevokedAccessTokenRepository = Depends(
+        get_revoked_access_token_repository
+    ),
 ) -> User:
     """Usado exclusivamente por `POST /auth/change-password` (ver
     docs/ROADMAP_PRIMEIRO_ACESSO.md). Deliberadamente NAO passa pelo
     gate de primeiro acesso obrigatorio de `get_current_user` -- e
     justamente o endpoint que permite conclui-lo."""
-    return _resolve_authenticated_user(token, user_service)
+    return _resolve_authenticated_user(token, user_service, revoked_access_token_repository)
 
 
 def get_current_user(
     token: str = Depends(oauth2_scheme),
     user_service: UserService = Depends(get_user_service),
+    revoked_access_token_repository: RevokedAccessTokenRepository = Depends(
+        get_revoked_access_token_repository
+    ),
 ) -> User:
-    user = _resolve_authenticated_user(token, user_service)
+    user = _resolve_authenticated_user(token, user_service, revoked_access_token_repository)
 
     # Primeiro acesso obrigatorio (ver docs/ROADMAP_PRIMEIRO_ACESSO.md):
     # unico ponto de checagem, herdado automaticamente por toda rota

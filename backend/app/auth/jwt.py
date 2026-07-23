@@ -1,5 +1,6 @@
 """Geracao e validacao de access tokens JWT."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -19,7 +20,11 @@ def create_access_token(
         expires_delta
         or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    payload: dict[str, Any] = {"sub": subject, "exp": expires_at}
+    # `jti` (auditoria de seguranca -- item 4, JWT): identificador unico
+    # por token, necessario para revogar um access token especifico no
+    # logout sem precisar manter estado de todas as sessoes ativas (ver
+    # `app.repositories.revoked_access_token_repository`).
+    payload: dict[str, Any] = {"sub": subject, "exp": expires_at, "jti": str(uuid.uuid4())}
     if extra_claims:
         payload.update(extra_claims)
 

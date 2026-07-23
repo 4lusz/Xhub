@@ -17,3 +17,7 @@ class PostMediaResponse(BaseModel):
     file_size_bytes: int
     position: int | None
     created_at: datetime
+    # `None` = midia compartilhada entre todas as contas do post; caso
+    # contrario, exclusiva desta conta (so possivel no modo INDEPENDENT
+    # -- ver app.models.enums.PostCompositionMode).
+    post_account_id: str | None = None

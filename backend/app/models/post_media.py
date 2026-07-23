@@ -1,18 +1,21 @@
 """Model PostMedia -- imagem/gif/video anexado a um Post.
 
-A midia e parte da publicacao, nao uma entidade independente: pertence
-sempre a um unico `Post` e e publicada de forma IDENTICA em todas as
-contas de destino desse post (apenas o texto varia por conta via
-`PostAccount.rendered_text` -- ver Publicacao Inteligente). A IA nunca
-toca em midia.
+A midia pertence sempre a um unico `Post`. No Fluxo 1 (SHARED) e
+tambem no Fluxo 2 (INDEPENDENT) com midia compartilhada, e publicada de
+forma IDENTICA em todas as contas de destino (`post_account_id=NULL`);
+no Fluxo 2 com midia individualizada por conta, cada `PostMedia` tem
+`post_account_id` preenchido e so e publicada NAQUELA conta -- ver
+`app.models.enums.PostCompositionMode`. A IA (Publicacao Inteligente)
+nunca toca em midia, em nenhum dos dois casos.
 
 `post_id` e nullable porque o arquivo e enviado (`POST /media/upload`)
 e armazenado ANTES do post existir, seguindo o mesmo fluxo do
 compositor do X: o usuario anexa midia enquanto ainda escreve o texto,
 com preview imediato, e so entao confirma a criacao do post
-(`POST /posts`, que anexa a midia ja enviada via `media_ids`). Uma
-midia com `post_id=NULL` pertence apenas ao usuario que fez o upload
-(`user_id`) e ainda nao foi confirmada em nenhum post.
+(`POST /posts`, que anexa a midia ja enviada via `media_ids`/
+`account_media_ids`). Uma midia com `post_id=NULL` pertence apenas ao
+usuario que fez o upload (`user_id`) e ainda nao foi confirmada em
+nenhum post.
 """
 
 import uuid
@@ -27,6 +30,7 @@ from app.models.enums import MediaType
 
 if TYPE_CHECKING:
     from app.models.post import Post
+    from app.models.post_account import PostAccount
     from app.models.user import User
 
 
@@ -39,6 +43,13 @@ class PostMedia(TimestampMixin, Base):
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # NULL = midia compartilhada entre todas as contas do post (unico
+    # caso possivel no modo SHARED, e o padrao no modo INDEPENDENT
+    # tambem). Preenchido = midia exclusiva desta conta, so possivel no
+    # modo INDEPENDENT quando o usuario opta por NAO compartilhar midia.
+    post_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("post_accounts.id", ondelete="CASCADE"), nullable=True, index=True
     )
 
     media_type: Mapped[MediaType] = mapped_column(
@@ -56,6 +67,7 @@ class PostMedia(TimestampMixin, Base):
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     post: Mapped["Post | None"] = relationship(back_populates="media")
+    post_account: Mapped["PostAccount | None"] = relationship()
     user: Mapped["User"] = relationship()
 
     def __repr__(self) -> str:

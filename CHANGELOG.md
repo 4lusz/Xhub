@@ -1,5 +1,64 @@
 # Changelog
 
+## 2026-07-23 - Auditoria de segurança completa pré-commit (JWT + rate limiting)
+
+Pedida explicitamente pelo usuário antes de um commit, seguindo um
+checklist de 7 itens (rate limiting, CORS, PII, JWT, enumeração de
+usuários, clickjacking/headers, SQLi/IDOR) no backend inteiro. Detalhe
+completo em `docs/AUDITORIA_SEGURANCA.md`.
+
+**2 achados reais, corrigidos:**
+- Access token sem invalidação pós-logout — `POST /auth/logout` agora
+  também revoga o access token em uso (novo `jti` em todo token, nova
+  tabela `revoked_access_tokens`), fechando a janela de até 30 minutos
+  em que um token continuava aceito depois do logout.
+- Rate limiting só por IP — nova segunda dimensão por usuário
+  autenticado/alvo submetido (e-mail no login, token no
+  refresh/2FA), que não pode ser contornada variando o IP de origem;
+  limite mais agressivo (5 vs. 10 por minuto) especificamente para
+  login/refresh/segundo fator.
+
+**5 itens verificados e já corretos** (CORS, headers de segurança,
+exposição de PII nas respostas, demais aspectos de JWT, enumeração de
+usuários, SQL injection, IDOR) — confirmados por leitura do código
+atual, não assumidos de auditorias anteriores.
+
+Validado: `pytest` (14, incluindo 8 testes novos: rate limit ativo,
+token rejeitado pós-logout, IDOR bloqueado, headers de segurança
+presentes), requisições HTTP reais contra o backend local, `tsc -b` e
+`npm run build` do frontend (sem mudança de código necessária lá).
+Nenhuma mudança quebra contrato de API existente.
+
+## 2026-07-22 - Separação Fluxo 1/Fluxo 2 na criação de post (conteúdo compartilhado vs. independente por conta)
+
+Pedido explícito do usuário, após analisar criticamente que a
+Publicação Inteligente vinha sendo usada como uma forma "escondida" de
+criar tweets completamente diferentes por conta (editando as variações
+até ficarem todas distintas), mesmo essa nunca tendo sido a proposta da
+funcionalidade. Detalhe completo em `docs/ROADMAP_COMPOSICAO_POST.md`.
+
+**Fluxo 1 (`composition_mode=shared`, default):** exatamente como já
+era — um texto original, Publicação Inteligente opcional/obrigatória
+por faixa de contas, mídia compartilhada.
+
+**Fluxo 2 (`composition_mode=independent`, novo):** sem texto
+principal, sem Publicação Inteligente — cada conta selecionada ganha
+seu próprio editor desde o início, com mídia compartilhada (padrão) ou
+individualizada por conta (`PostMedia.post_account_id`, novo,
+nullable). `Post.text` fica `NULL` nesse modo; cada
+`PostAccount.rendered_text` é obrigatório e independente das demais
+(duplicar texto entre contas é permitido, decisão manual do usuário).
+
+**Aviso de conteúdo duplicado (não bloqueia), adicionado nos dois
+fluxos** após uma auditoria de segurança dedicada apontar que o Fluxo 2
+contornava a proteção anti-detecção de conteúdo repetitivo (hoje só
+aplicada obrigatoriamente a partir de 5 contas no Fluxo 1): quando 2+
+contas ficam com o mesmo texto fora desse caso já bloqueado, a
+interface avisa do risco de detecção pela plataforma X, mas permite
+confirmar — bloquear automaticamente reverteria decisões de produto já
+tomadas (variação é opcional em poucas contas; o Fluxo 2 dá controle
+manual total ao usuário).
+
 ## 2026-07-22 - Coleta decrescente de métricas por idade do post (~45% menos leituras pagas)
 
 Pedido explícito do usuário, depois de refletir sobre o custo agregado

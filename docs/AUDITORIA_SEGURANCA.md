@@ -604,6 +604,240 @@ código; o widget clássico do Google Translate exigiria afrouxar a CSP
 Google), reabrindo superfície de XSS por um ganho marginal. Não
 implementado.
 
+## Atualização (2026-07-22, mesmo dia): separação Fluxo 1/Fluxo 2 (composition_mode)
+
+Auditoria de segurança pedida explicitamente pelo usuário ao final da
+implementação da separação entre publicar o mesmo conteúdo em várias
+contas (Fluxo 1, `composition_mode=SHARED`, comportamento histórico
+inalterado) e publicar um tweet totalmente independente por conta
+(Fluxo 2, `composition_mode=INDEPENDENT`, sem texto principal, sem
+Publicação Inteligente, com mídia compartilhada ou individual por
+conta via `PostMedia.post_account_id` nullable). Modelo de ameaça:
+mesmo da auditoria original — atacante com acesso só ao frontend/API
+pública, sem presumir boa fé em nenhuma entrada.
+
+### Achado: Fluxo 2 contorna a proteção anti-detecção de 5+ contas (Média)
+
+**Causa raiz:** a regra de "variação obrigatória e distinta em 5+
+contas" (`MANDATORY_VARIATION_ACCOUNT_THRESHOLD`, ver seção 10 do
+`CLAUDE.md`) existe especificamente para impedir publicar o MESMO texto
+em muitas contas ao mesmo tempo — risco documentado de bloqueio pela
+plataforma X por padrão de conteúdo repetitivo. Essa regra continua
+intacta no Fluxo 1 (`publish_post` só a aplica quando
+`composition_mode is SHARED`, por design — não faz sentido "variação"
+onde não há original). Porém, o Fluxo 2 permite deliberadamente que o
+usuário repita o mesmo texto entre contas (decisão de produto explícita
+desta conversa: "duplicar texto entre contas é permitido, é uma decisão
+manual do usuário"), e não tem NENHUM limiar mínimo de contas — um
+usuário com 5, 10 ou 15 contas selecionadas pode escolher "conteúdo
+independente" e colar o mesmo texto em todas as caixas, publicando
+exatamente o padrão que a regra do Fluxo 1 foi criada para bloquear,
+sem passar por nenhuma validação de unicidade.
+
+**Impacto:** o Fluxo 2 é, na prática, um caminho para contornar a
+proteção anti-detecção de conteúdo duplicado em massa — não é uma falha
+de autorização/IDOR (o usuário só afeta as próprias contas, dentro do
+próprio limite de plano), mas enfraquece uma salvaguarda de produto
+documentada como princípio de primeira classe (seção 1 do
+`CLAUDE.md`: "Nunca publicar exatamente o mesmo texto em muitas contas
+ao mesmo tempo sem necessidade").
+
+**Mitigado (mesmo dia, a pedido do usuário):** aviso não bloqueante nos
+DOIS fluxos (não só no Fluxo 2) sempre que 2+ contas selecionadas
+acabam com o mesmo texto, fora do caso que já era bloqueado (Fluxo 1
+com 5+ contas, variação obrigatória — esse continua um bloqueio, sem
+mudança). Deliberadamente um aviso, não um bloqueio automático: um
+bloqueio reverteria decisões de produto já tomadas nesta mesma
+conversa — variação é OPCIONAL em 2-4 contas (publicar o mesmo anúncio
+em poucas contas é um uso legítimo e comum, é literalmente o caso de
+uso padrão dessa faixa) e o Fluxo 2 foi desenhado para dar controle
+manual total ao usuário, incluindo a liberdade de repetir texto se essa
+for a intenção real dele. O aviso informa o risco (detecção de padrão
+repetitivo pela plataforma X) sem impedir a ação, mantendo o usuário no
+controle da decisão. Ver `docs/ROADMAP_COMPOSICAO_POST.md` seção 2 e
+`IntelligentPublicationPreviewModal.tsx`/`IndependentPostComposer.tsx`
+para a implementação.
+
+### Áreas revisadas e aprovadas sem achado
+
+- **IDOR/posse de recursos:** `twitter_account_ids`, `media_ids` e
+  `account_media_ids` são todos revalidados contra o usuário autenticado
+  em `PostService.create_post` (mesmo padrão já existente) — impossível
+  anexar mídia de outro usuário ou apontar `post_account_id` para uma
+  conta que não seja do próprio usuário (o mapeamento é construído
+  internamente pelo service a partir de contas já validadas, nunca
+  aceito diretamente do cliente).
+- **Mistura de mídia compartilhada/individual:** `media_ids` e
+  `account_media_ids` são mutuamente exclusivos, validado no service
+  (`ValidationError` se ambos vierem preenchidos) — confirmado ao vivo
+  via curl.
+- **Reuso da mesma mídia em duas contas:** rejeitado explicitamente
+  (`_validate_and_load_account_media`) — sem essa checagem, duas contas
+  poderiam "roubar" silenciosamente a mesma mídia uma da outra (a
+  segunda validação venceria por último), já que nenhuma das duas
+  ainda estaria anexada no momento da validação de qualquer uma delas.
+- **Cálculo de créditos por conta:** movido de uma única chamada sobre
+  `Post.text` para uma chamada por conta sobre o texto EFETIVO dela
+  (`rendered_text or post.text`) — não é uma superfície nova de
+  manipulação: o texto usado no cálculo é sempre o mesmo já persistido
+  na criação do post (sem rota de edição posterior), nunca um valor
+  enviado pelo cliente no momento da publicação.
+- **Exposição de dados:** `PostAccountResponse.rendered_text` (novo)
+  expõe ao cliente só o próprio texto que ele mesmo escreveu — sem
+  relação com `AdminPostAccountResponse` (schema totalmente separado em
+  `app/routes/admin.py`, que continua sem expor conteúdo de post ao
+  administrador, por design). `PostMediaResponse.post_account_id`
+  (novo) só identifica qual conta (já visível na mesma resposta) uma
+  mídia pertence — nenhuma informação nova exposta.
+- **Camadas (`domain`/`repositories`/`services`):** `app/domain/post_composition.py`
+  não importa SQLAlchemy/FastAPI/models (confirmado); repositories
+  (`PostMediaRepository`) não commitam (confirmado, `BaseRepository`
+  nunca chama commit); commit continua responsabilidade exclusiva da
+  rota.
+- **Corrida de dados (nota, não corrigida por ser pré-existente):** há
+  uma janela teórica de TOCTOU entre validar que uma mídia está livre
+  (`post_id IS NULL`) e de fato anexá-la, se duas requisições
+  concorrentes do MESMO usuário referenciarem o mesmo `media_id` — já
+  existia antes desta funcionalidade (mesma checagem para `media_ids`
+  compartilhado), não é uma vulnerabilidade nova nem cross-user, apenas
+  uma inconsistência de dados de baixa severidade (uma das duas
+  requisições ficaria sem aquele item de mídia).
+
+## Atualização (2026-07-23): auditoria completa pré-commit (checklist OWASP-style)
+
+Pedida explicitamente pelo usuário antes de um commit, cobrindo backend
+(FastAPI) e frontend (React) contra um checklist de 7 itens: rate
+limiting, CORS, exposição de PII, JWT, enumeração de usuários,
+clickjacking/headers, SQL injection/IDOR. Ordem seguida: auditar →
+corrigir → testar. Resultado: **2 achados reais corrigidos**, 5 itens
+já estavam corretos (confirmado por leitura do código atual, não por
+memória de auditorias anteriores).
+
+### Achado 1: access token sem invalidação pós-logout (Média/Alta)
+
+**Causa raiz:** `POST /auth/logout` só revogava o refresh token; o
+access token JWT em uso continuava válido até expirar naturalmente
+(até `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`, 30 min) — decisão documentada
+como "stateless por design", mas incompatível com a exigência explícita
+desta auditoria ("um token usado após logout deve retornar 401").
+
+**Corrigido:** toda claim de access token ganhou um `jti` (UUID,
+`app.auth.jwt.create_access_token`). Nova tabela `revoked_access_tokens`
+(migration `d7e8f9a0b1c2`) guarda os `jti` revogados explicitamente,
+com `expires_at` copiado da própria claim `exp` (usado só para limpar
+entradas cujo token já expiraria de qualquer forma —
+`RevokedAccessTokenRepository.delete_expired`, chamado a cada nova
+revogação, sem exigir job dedicado). `POST /auth/logout` agora também
+extrai e revoga o access token em uso (via `oauth2_scheme_optional`,
+que nunca falha sozinho — logout sempre revoga ao menos o refresh
+token, mesmo sem um access token válido presente).
+`_resolve_authenticated_user` (usado por `get_current_user` e
+`get_current_user_for_password_change`, herdado por toda rota
+protegida) passou a rejeitar qualquer token cujo `jti` esteja na
+denylist, antes de qualquer outra checagem.
+
+**Validado ao vivo:** `GET /auth/me` com um access token válido → 200;
+`POST /auth/logout` com o mesmo token → 204; `GET /auth/me` de novo,
+MESMO token → 401. `POST /auth/refresh` com o refresh token já
+revogado → 401. Testes automatizados novos:
+`test_revoked_access_token_is_rejected_with_401`/
+`test_non_revoked_access_token_still_accepted` (contraprova).
+
+### Achado 2: rate limiting só por IP, sem dimensão por usuário/alvo (Média)
+
+**Causa raiz:** `RateLimitMiddleware` chaveava exclusivamente por
+`(método, path, IP)`. Um atacante distribuindo tentativas contra a
+MESMA conta-alvo através de uma rede de proxies/VPNs (IP variável a
+cada requisição) contornava o limite por completo, mesmo antes de
+qualquer autenticação existir. Além disso, todos os caminhos sensíveis
+compartilhavam o mesmo limite (10/60s) — login/refresh/2FA (alvo
+clássico de credential stuffing) não tinham um limite mais agressivo
+que, por exemplo, upload de mídia.
+
+**Corrigido:** segunda dimensão de limite, independente da primeira
+(uma requisição só passa se AMBAS estiverem dentro do orçamento):
+- Rotas autenticadas via header (`media/upload`,
+  `intelligent-publication/preview`, `posts/*/publish`,
+  `posts/*/schedule`): chave = `sub` (id do usuário) extraído do JWT
+  sem verificar assinatura (só para chavear — a validação real
+  continua exclusivamente em `app.auth.dependencies`).
+- `/auth/login`: chave = e-mail submetido (`username` do form).
+- `/auth/refresh`/`/auth/verify-security-answer`: chave = o próprio
+  token submetido no corpo.
+Novo `AUTH_LOGIN_RATE_LIMIT_MAX_REQUESTS` (padrão 5, contra o padrão
+geral de 10) aplicado especificamente a login/refresh/2FA.
+
+Leitura do corpo da requisição dentro do middleware (`_target_key`) é
+segura e não interfere na leitura posterior pela rota: Starlette
+armazena em cache os bytes do corpo na primeira leitura
+(`Request.body()`), então o parsing do FastAPI/Pydantic na rota em si
+lê os mesmos bytes já em cache — confirmado ao vivo (login continuou
+funcionando normalmente após a mudança, testado com curl real antes de
+considerar a correção pronta).
+
+**Nota mantida (pré-existente, não uma regressão desta correção):** o
+mecanismo continua em memória local por processo — com múltiplos
+workers (`--workers 2`, dev e produção), cada processo tem seu próprio
+orçamento independente, então o limite agregado efetivo é até
+workers × limite configurado. Resolver isso definitivamente exigiria
+estado compartilhado (Redis), fora do escopo (mesma decisão já
+registrada na correção original deste middleware). Confirmado ao vivo:
+com 2 workers, um teste de 20 tentativas contra o mesmo alvo mostrou
+bloqueio intermitente (401/429 alternados) exatamente como esperado
+para dois orçamentos independentes de 5, nunca "ilimitado".
+
+**Validado:** testes automatizados novos em app isolado (sem herdar
+estado do app principal) —
+`test_rate_limit_blocks_after_max_requests`,
+`test_rate_limit_per_target_blocks_even_with_different_ip_header`
+(confirma que variar o IP declarado não contorna o limite quando o
+alvo — e-mail — é o mesmo).
+
+### Itens verificados e já corretos (sem necessidade de correção)
+
+- **CORS:** `CORS_ORIGINS` é uma lista explícita (produção:
+  `["https://xhub.app.br"]`, nunca `"*"`), `allow_credentials=True`
+  combinado corretamente com origem explícita.
+- **Headers de segurança:** `X-Frame-Options: DENY`,
+  `Content-Security-Policy: frame-ancestors 'none'`,
+  `X-Content-Type-Options: nosniff`, `Strict-Transport-Security`
+  presentes em toda resposta (`SecurityHeadersMiddleware`), inclusive em
+  respostas de erro — já implementados numa auditoria anterior,
+  reconfirmados presentes agora.
+- **Exposição de PII:** toda rota revisada (posts, contas do X, mídia,
+  métricas, Publicação Inteligente, `/me`, admin) usa `response_model`
+  explícito, construído campo a campo (nenhum `**dict`/`from_orm`/spread
+  encontrado em nenhuma rota) — nenhum `password_hash`,
+  `security_answer_hash`, token OAuth do X ou dado de outro usuário
+  (fora das rotas administrativas, que são o caso de uso legítimo)
+  exposto em nenhuma resposta.
+- **JWT (demais itens):** algoritmo fixado (`HS256`, nunca aceita
+  `none`), secret vindo de variável de ambiente com validação contra
+  segredos fracos/padrão em produção, expiração curta (30 min),
+  nenhum token trafegando em query string/URL em nenhuma rota (sempre
+  `Authorization: Bearer`, confirmado também no frontend).
+- **Enumeração de usuários:** `/auth/login` retorna mensagem e status
+  idênticos ("Email ou senha invalidos.", 401) para e-mail inexistente
+  e senha errada, com mitigação de timing (hash bcrypt "isca" calculado
+  mesmo quando o e-mail não existe) — corrigido numa auditoria
+  anterior, reconfirmado. Não há endpoint público de registro nem de
+  recuperação de senha (só reset administrativo, `get_current_admin`),
+  então essa parte do item não se aplica ao modelo de negócio real.
+- **SQL injection:** confirmado, com uma varredura completa do
+  backend, que 100% das queries usam ORM/SQLAlchemy Core parametrizado
+  — nenhuma f-string, `.format()` ou concatenação de input do usuário
+  em SQL, em nenhum arquivo.
+- **IDOR:** toda rota que recebe um id de recurso (posts, agendamentos,
+  contas do X, mídia, métricas, Publicação Inteligente) revalida posse
+  contra o usuário autenticado antes de responder — confirmado rota a
+  rota. Rotas administrativas (`get_current_admin`) operam
+  globalmente por design (esse é o propósito de um painel admin), não
+  é um caso de IDOR.
+
+Nenhuma mudança quebra o contrato de API existente (campos novos são
+sempre opcionais/aditivos); nenhum teste falhou. Deploy realizado no
+mesmo commit desta atualização.
+
 ## Atualização (2026-07-17, mesmo dia): `fastapi`/`starlette` corrigido
 
 A recomendação original desta seção (ver abaixo, mantida como registro

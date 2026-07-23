@@ -30,7 +30,11 @@ export function PostRow({ post, onPublish, onDelete, onCancelSchedule, isBusy }:
       <Card>
         <CardContent className="flex items-start justify-between gap-4 p-5">
           <div className="min-w-0 space-y-1.5">
-            <p className="whitespace-pre-wrap text-sm text-foreground">{post.text}</p>
+            <p className="whitespace-pre-wrap text-sm text-foreground">
+              {post.composition_mode === "independent"
+                ? `${post.accounts.length} tweet${post.accounts.length > 1 ? "s" : ""} independente${post.accounts.length > 1 ? "s" : ""} (um por conta)`
+                : post.text}
+            </p>
             <div className="flex flex-wrap items-center gap-2 text-xs text-subtle-foreground">
               <span title={formatDateTime(post.created_at)}>
                 {formatRelativeTime(post.created_at)}

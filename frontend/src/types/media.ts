@@ -7,4 +7,6 @@ export interface PostMedia {
   file_size_bytes: number;
   position: number | null;
   created_at: string;
+  /** `null` = compartilhada entre todas as contas do post; senão, exclusiva desta conta (só no modo independent). */
+  post_account_id: string | null;
 }

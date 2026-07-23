@@ -79,3 +79,22 @@ class MediaType(str, enum.Enum):
     IMAGE = "image"
     GIF = "gif"
     VIDEO = "video"
+
+
+class PostCompositionMode(str, enum.Enum):
+    """Como o conteudo de um Post e composto entre as contas de destino
+    (ver CLAUDE.md e docs/ROADMAP_COMPOSICAO_POST.md).
+
+    SHARED (Fluxo 1, comportamento historico): um unico `Post.text`
+    original, com Publicacao Inteligente opcional/obrigatoria por faixa
+    de contas (ver `app.domain.policies`) e `PostAccount.rendered_text`
+    como variacao/edicao OPCIONAL desse texto.
+
+    INDEPENDENT (Fluxo 2): nao existe `Post.text` (fica `NULL`) nem
+    Publicacao Inteligente -- toda conta selecionada tem seu proprio
+    `PostAccount.rendered_text`, OBRIGATORIO, escrito manualmente pelo
+    usuario, sem nenhuma relacao entre as contas.
+    """
+
+    SHARED = "shared"
+    INDEPENDENT = "independent"

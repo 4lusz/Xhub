@@ -105,6 +105,13 @@ class Settings(BaseSettings):
     AUTH_RATE_LIMIT_ENABLED: bool = Field(default=True)
     AUTH_RATE_LIMIT_MAX_REQUESTS: int = Field(default=10)
     AUTH_RATE_LIMIT_WINDOW_SECONDS: int = Field(default=60)
+    # Auditoria de seguranca -- item 1 (rate limiting): limite mais
+    # agressivo especificamente para login/refresh/2FA (credential
+    # stuffing/brute force), na MESMA janela de
+    # AUTH_RATE_LIMIT_WINDOW_SECONDS -- os demais caminhos sensiveis
+    # (upload de midia, Publicacao Inteligente, publicar/agendar)
+    # continuam no limite padrao acima.
+    AUTH_LOGIN_RATE_LIMIT_MAX_REQUESTS: int = Field(default=5)
     # Confianca em X-Forwarded-For: por padrao (False) o rate limit usa
     # exclusivamente o IP de conexao TCP (request.client.host), que nao
     # pode ser forjado pelo cliente. So deve ser habilitado quando a

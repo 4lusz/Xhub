@@ -1,3 +1,31 @@
+# CHANGELOG — Separação Fluxo 1/Fluxo 2 de composição de post
+
+Detalhe completo em `CHANGELOG.md` (raiz) e `docs/ROADMAP_COMPOSICAO_POST.md`.
+
+- **`components/posts/IndependentPostComposer.tsx`** (novo) — Fluxo 2:
+  um editor de texto por conta selecionada, toggle "mesma mídia para
+  todos" (com `ConfirmDialog` antes de limpar mídia já anexada ao
+  trocar de modo), aviso não bloqueante de texto duplicado entre
+  contas.
+- **`components/posts/AccountMediaEditor.tsx`** (novo) — uma instância
+  de `useMediaComposer` por conta (mídia individual), reportando estado
+  pro pai via callback.
+- **`components/intelligent-publication/IntelligentPublicationPreviewModal.tsx`** —
+  aviso não bloqueante de texto duplicado fora do caso obrigatório de
+  5+ contas (que continua bloqueando, sem mudança);
+  `VariationAccountCard.tsx` ganhou um indicador visual (âmbar, não
+  vermelho) para esse caso.
+- **`pages/NewPostPage.tsx`** — seletor de modo (`Tabs`), Fluxo 1
+  mantido exatamente como era.
+- **`types/post.ts`**/**`types/media.ts`** — `PostCompositionMode`,
+  `Post.text` nullable, `account_media_ids`, `PostMedia.post_account_id`.
+- **`components/posts/PostRow.tsx`**/**`pages/DashboardPage.tsx`** —
+  fallback quando `post.text` é `null` (Fluxo 2): mostra a contagem de
+  tweets independentes em vez do texto.
+
+Validado: `tsc -b` e `npm run build` limpos, requisições HTTP reais
+contra o backend local confirmando o contrato de API dos dois modos.
+
 # CHANGELOG — Segundo fator de login (pergunta de segurança)
 
 Detalhe completo em `CHANGELOG.md` (raiz).

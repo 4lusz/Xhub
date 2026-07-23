@@ -20,8 +20,11 @@
 > dependências com CVE avaliadas, cobertura OWASP Top 10),
 > `docs/ROADMAP_METRICAS.md` (métricas de desempenho por conta/post —
 > tela "Resultados", coleta em background, detecção de anomalia de
-> alcance). Cada um documenta a decisão técnica detalhada e a validação
-> executada da sua respectiva funcionalidade.
+> alcance), `docs/ROADMAP_COMPOSICAO_POST.md` (separação Fluxo 1/Fluxo 2
+> — mesmo conteúdo compartilhado com Publicação Inteligente opcional vs.
+> um tweet totalmente independente por conta, com mídia compartilhada ou
+> individualizada). Cada um documenta a decisão técnica detalhada e a
+> validação executada da sua respectiva funcionalidade.
 
 ## 1. Objetivo do XHub
 

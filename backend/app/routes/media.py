@@ -33,6 +33,7 @@ def _to_media_response(media: PostMedia) -> PostMediaResponse:
         file_size_bytes=media.file_size_bytes,
         position=media.position,
         created_at=media.created_at,
+        post_account_id=None,
     )
 
 

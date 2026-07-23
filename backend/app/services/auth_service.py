@@ -20,6 +20,9 @@ from app.core.exceptions import ForbiddenException, UnauthorizedException
 from app.domain.security_answer import normalize_security_answer
 from app.models.user import User
 from app.repositories.refresh_token_repository import RefreshTokenRepository
+from app.repositories.revoked_access_token_repository import (
+    RevokedAccessTokenRepository,
+)
 from app.repositories.user_repository import UserRepository
 
 # Segundo fator simples de login (pergunta de seguranca), hoje restrito
@@ -50,9 +53,15 @@ class AuthService:
         self,
         user_repository: UserRepository,
         refresh_token_repository: RefreshTokenRepository,
+        revoked_access_token_repository: RevokedAccessTokenRepository | None = None,
     ) -> None:
         self.user_repository = user_repository
         self.refresh_token_repository = refresh_token_repository
+        # Opcional (auditoria de seguranca -- item 4, JWT): so
+        # `get_auth_service` (producao) injeta de fato; testes que nao
+        # exercitam revogacao de access token podem seguir montando
+        # `AuthService` sem esse repository, sem quebrar.
+        self.revoked_access_token_repository = revoked_access_token_repository
 
     def authenticate(self, *, email: str, password: str) -> User:
         user = self.user_repository.get_by_email(email.strip().lower())
@@ -201,3 +210,33 @@ class AuthService:
             self.refresh_token_repository.update(
                 stored, {"revoked_at": datetime.now(UTC)}
             )
+
+    def revoke_access_token(self, access_token: str) -> None:
+        """Revoga o access token JWT em uso (auditoria de seguranca --
+        item 4, JWT: "um token usado apos logout deve retornar 401").
+
+        Silenciosamente ignora tokens ja invalidos/expirados/malformados
+        -- nesse caso ja nao ha nada de fato revogavel (um token expirado
+        e rejeitado por `decode_access_token` de qualquer forma) e o
+        logout nunca deve falhar por causa disso: revogar o refresh
+        token (ver `revoke_refresh_token`) e sempre o efeito principal e
+        garantido, a revogacao do access token e um reforco extra.
+        """
+        if self.revoked_access_token_repository is None:
+            return
+
+        try:
+            payload = decode_access_token(access_token)
+        except UnauthorizedException:
+            return
+
+        jti = payload.get("jti")
+        expires_at_timestamp = payload.get("exp")
+        if not jti or expires_at_timestamp is None:
+            return
+
+        self.revoked_access_token_repository.revoke(
+            uuid.UUID(jti),
+            datetime.fromtimestamp(expires_at_timestamp, tz=UTC),
+        )
+        self.revoked_access_token_repository.delete_expired(datetime.now(UTC))

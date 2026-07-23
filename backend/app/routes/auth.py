@@ -27,6 +27,7 @@ from app.auth.dependencies import (
     get_current_user,
     get_current_user_for_password_change,
     get_user_service,
+    oauth2_scheme_optional,
 )
 from app.core.exceptions import (
     BaseAppException,
@@ -317,11 +318,16 @@ def refresh(
 def logout(
     data: RefreshRequest,
     db: Session = Depends(get_db),
+    access_token: str | None = Depends(oauth2_scheme_optional),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> None:
-    """Revoga o refresh token informado. O access token JWT em uso
-    continua valido ate expirar naturalmente (stateless, por design) --
-    revogar o refresh token impede que a sessao seja renovada depois
-    que ele expirar."""
+    """Revoga o refresh token informado E o access token em uso (se
+    presente e ainda valido), fechando a janela em que um token
+    continuava aceito por ate `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` apos o
+    logout (auditoria de seguranca -- item 4, JWT). `access_token` e
+    opcional de proposito: logout sempre deve suceder (revogando ao
+    menos o refresh token), mesmo sem um header Authorization valido."""
     auth_service.revoke_refresh_token(data.refresh_token)
+    if access_token:
+        auth_service.revoke_access_token(access_token)
     db.commit()

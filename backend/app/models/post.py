@@ -8,7 +8,7 @@ from sqlalchemy import ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin
-from app.models.enums import PostStatus
+from app.models.enums import PostCompositionMode, PostStatus
 
 if TYPE_CHECKING:
     from app.models.post_account import PostAccount
@@ -24,11 +24,25 @@ class Post(TimestampMixin, Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Nullable: obrigatorio apenas no modo SHARED (Fluxo 1). No modo
+    # INDEPENDENT (Fluxo 2, ver `composition_mode`) nao existe texto
+    # principal -- cada conta tem o seu proprio em
+    # `PostAccount.rendered_text` (obrigatorio nesse modo).
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[PostStatus] = mapped_column(
         SqlEnum(PostStatus, name="post_status", native_enum=True),
         nullable=False,
         default=PostStatus.DRAFT,
+    )
+    # Fluxo 1 (SHARED) vs Fluxo 2 (INDEPENDENT) -- ver
+    # `app.models.enums.PostCompositionMode`. Decidido na criacao do
+    # post, nunca inferido do conteudo depois: `PostService.publish_post`
+    # usa isto para saber se revalida a Publicacao Inteligente (so faz
+    # sentido em SHARED).
+    composition_mode: Mapped[PostCompositionMode] = mapped_column(
+        SqlEnum(PostCompositionMode, name="post_composition_mode", native_enum=True),
+        nullable=False,
+        default=PostCompositionMode.SHARED,
     )
 
     user: Mapped["User"] = relationship(back_populates="posts")

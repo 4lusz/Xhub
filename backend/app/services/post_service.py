@@ -11,6 +11,7 @@ from app.models.enums import (
     PostStatus,
 )
 from app.models.post import Post
+from app.models.post_account import PostAccount
 from app.models.post_media import PostMedia
 from app.repositories.post_account_repository import PostAccountRepository
 from app.repositories.post_media_repository import PostMediaRepository
@@ -33,7 +34,9 @@ from app.domain.media_rules import (
     x_media_category_for,
 )
 from app.domain.policies import MANDATORY_VARIATION_ACCOUNT_THRESHOLD
+from app.domain.post_composition import find_accounts_missing_independent_text
 from app.domain.publication_cost import credits_per_account_for_post
+from app.models.enums import PostCompositionMode
 from app.services.jitter_service import JitterService
 
 logger = get_logger(__name__)
@@ -155,33 +158,36 @@ class PostService(BaseService[Post]):
         self,
         *,
         user_id: uuid.UUID,
-        text: str,
         twitter_account_ids: Sequence[uuid.UUID],
+        composition_mode: PostCompositionMode = PostCompositionMode.SHARED,
+        text: str | None = None,
         rendered_texts: Mapping[uuid.UUID, str] | None = None,
         media_ids: Sequence[uuid.UUID] | None = None,
+        account_media_ids: Mapping[uuid.UUID, Sequence[uuid.UUID]] | None = None,
     ) -> Post:
-        """Cria um `Post` com o texto original e um `PostAccount` por
-        conta selecionada.
+        """Cria um `Post` e um `PostAccount` por conta selecionada, num
+        dos dois modos de composicao (ver
+        `app.models.enums.PostCompositionMode`, CLAUDE.md e
+        docs/ROADMAP_COMPOSICAO_POST.md):
 
-        `rendered_texts` (Publicacao Inteligente -- ver
-        docs/ROADMAP_PUBLICACAO_INTELIGENTE.md): mapa opcional de
-        `twitter_account_id -> texto final aprovado` (gerado por IA
-        e/ou editado manualmente pelo usuario apos o preview). Quando
-        ausente, `PostAccount.rendered_text` fica `NULL` e
-        `publish_post` usa `Post.text` -- comportamento identico ao
-        anterior a esta funcionalidade, preservando compatibilidade
-        total com clientes existentes.
-
-        `media_ids` (midia -- ver docs/ROADMAP_MEDIA.md): ids opcionais
-        de `PostMedia` ja enviados via `POST /media/upload` (ainda sem
-        `post_id`), na ordem em que devem ser publicados. A midia e
-        IDENTICA para todas as contas do post -- nunca variada pela
-        Publicacao Inteligente, que so atua sobre o texto.
+        - SHARED (Fluxo 1, comportamento historico, default): `text` e
+          obrigatorio e vira `Post.text`. `rendered_texts` (Publicacao
+          Inteligente -- ver docs/ROADMAP_PUBLICACAO_INTELIGENTE.md) e
+          um mapa OPCIONAL de `twitter_account_id -> texto final
+          aprovado`; ausente, `PostAccount.rendered_text` fica `NULL` e
+          `publish_post` usa `Post.text`. `media_ids` (ver
+          docs/ROADMAP_MEDIA.md) e IDENTICA para todas as contas.
+        - INDEPENDENT (Fluxo 2): nao existe texto principal -- `text`
+          deve vir vazio/ausente, e `Post.text` fica `NULL`.
+          `rendered_texts` passa a ser OBRIGATORIO para TODA conta
+          selecionada (cada uma com seu proprio tweet, sem relacao
+          entre si -- nunca invariantes preservadas, nunca variacao por
+          IA). Midia pode ser compartilhada (`media_ids`, mesmo
+          comportamento do modo SHARED) OU individual por conta
+          (`account_media_ids`, mapa `twitter_account_id -> media_ids`)
+          -- nunca as duas ao mesmo tempo.
         """
         self._ensure_user_exists(user_id)
-
-        if not text.strip():
-            raise ValidationError("O texto do post nao pode estar vazio.")
 
         if not twitter_account_ids:
             raise ValidationError("Selecione ao menos uma conta do X.")
@@ -200,40 +206,102 @@ class PostService(BaseService[Post]):
             if account.user_id != user_id:
                 raise NotFoundError("Conta do X nao pertence ao usuario.")
 
-        media_items = self._validate_and_load_media(user_id=user_id, media_ids=media_ids)
-
-        self._validate_rendered_texts(
-            text=text,
-            twitter_account_ids=twitter_account_ids,
-            rendered_texts=rendered_texts,
-        )
-
-        if rendered_texts:
-            variation_count = sum(
-                1 for account_id in twitter_account_ids if rendered_texts.get(account_id)
+        if media_ids and account_media_ids:
+            raise ValidationError(
+                "Escolha midia compartilhada ou midia por conta, nao as "
+                "duas ao mesmo tempo."
             )
-            logger.info(
-                "Post confirmado com textos finais da Publicacao "
-                "Inteligente (conteudo omitido do log).",
-                extra={
-                    "account_count": len(twitter_account_ids),
-                    "accounts_with_final_text": variation_count,
-                },
+
+        if composition_mode is PostCompositionMode.INDEPENDENT:
+            if text is not None and text.strip():
+                raise ValidationError(
+                    "No modo de conteudo independente por conta nao "
+                    "existe texto principal -- envie apenas o texto de "
+                    "cada conta."
+                )
+
+            unknown_ids = set((rendered_texts or {}).keys()) - set(twitter_account_ids)
+            if unknown_ids:
+                raise ValidationError(
+                    "rendered_texts contem contas que nao fazem parte "
+                    "de twitter_account_ids."
+                )
+
+            missing = find_accounts_missing_independent_text(
+                twitter_account_ids, rendered_texts
             )
+            if missing:
+                raise ValidationError(
+                    "No modo de conteudo independente por conta, toda "
+                    "conta selecionada precisa ter seu proprio texto."
+                )
+
+            for account_text in (rendered_texts or {}).values():
+                if len(account_text) > 280:
+                    raise ValidationError(
+                        "O texto de uma das contas excede o limite de "
+                        "280 caracteres."
+                    )
+
+            shared_media_items = self._validate_and_load_media(
+                user_id=user_id, media_ids=media_ids
+            )
+            account_media_items = self._validate_and_load_account_media(
+                user_id=user_id,
+                account_media_ids=account_media_ids,
+                twitter_account_ids=twitter_account_ids,
+            )
+            post_text = None
+        else:
+            if not text or not text.strip():
+                raise ValidationError("O texto do post nao pode estar vazio.")
+
+            if account_media_ids:
+                raise ValidationError(
+                    "Midia por conta so esta disponivel no modo de "
+                    "conteudo independente por conta."
+                )
+
+            shared_media_items = self._validate_and_load_media(
+                user_id=user_id, media_ids=media_ids
+            )
+            account_media_items = {}
+
+            self._validate_rendered_texts(
+                text=text,
+                twitter_account_ids=twitter_account_ids,
+                rendered_texts=rendered_texts,
+            )
+            post_text = text.strip()
+
+            if rendered_texts:
+                variation_count = sum(
+                    1 for account_id in twitter_account_ids if rendered_texts.get(account_id)
+                )
+                logger.info(
+                    "Post confirmado com textos finais da Publicacao "
+                    "Inteligente (conteudo omitido do log).",
+                    extra={
+                        "account_count": len(twitter_account_ids),
+                        "accounts_with_final_text": variation_count,
+                    },
+                )
 
         post = self.post_repository.create(
             {
                 "user_id": user_id,
-                "text": text.strip(),
+                "text": post_text,
                 "status": PostStatus.PENDING,
+                "composition_mode": composition_mode,
             }
         )
 
+        post_accounts_by_id: dict[uuid.UUID, PostAccount] = {}
         for account_id in twitter_account_ids:
             rendered_text = (
                 rendered_texts.get(account_id) if rendered_texts else None
             )
-            self.post_account_repository.create(
+            post_accounts_by_id[account_id] = self.post_account_repository.create(
                 {
                     "post_id": post.id,
                     "twitter_account_id": account_id,
@@ -243,10 +311,20 @@ class PostService(BaseService[Post]):
                 }
             )
 
-        for position, media_item in enumerate(media_items):
+        for position, media_item in enumerate(shared_media_items):
             self.post_media_repository.attach_to_post(
                 media_item, post_id=post.id, position=position
             )
+
+        for account_id, media_items in account_media_items.items():
+            post_account = post_accounts_by_id[account_id]
+            for position, media_item in enumerate(media_items):
+                self.post_media_repository.attach_to_post(
+                    media_item,
+                    post_id=post.id,
+                    position=position,
+                    post_account_id=post_account.id,
+                )
 
         return post
 
@@ -292,6 +370,50 @@ class PostService(BaseService[Post]):
             raise ValidationError(combination_error)
 
         return media_items
+
+    def _validate_and_load_account_media(
+        self,
+        *,
+        user_id: uuid.UUID,
+        account_media_ids: Mapping[uuid.UUID, Sequence[uuid.UUID]] | None,
+        twitter_account_ids: Sequence[uuid.UUID],
+    ) -> dict[uuid.UUID, list[PostMedia]]:
+        """Midia individual por conta (modo INDEPENDENT, midia NAO
+        compartilhada -- ver `PostService.create_post`). Cada conta e
+        validada com as MESMAS regras de `_validate_and_load_media`
+        (pertence ao usuario, ainda nao anexada, combinacao de tipos
+        valida), como um post independente em si. Alem disso, a MESMA
+        midia nao pode aparecer em duas contas diferentes desta
+        requisicao -- sem essa checagem, as duas passariam na validacao
+        individual (nenhuma das duas ainda anexada) e o attach
+        posterior faria a segunda conta "roubar" silenciosamente a
+        midia da primeira."""
+        if not account_media_ids:
+            return {}
+
+        unknown_ids = set(account_media_ids.keys()) - set(twitter_account_ids)
+        if unknown_ids:
+            raise ValidationError(
+                "account_media_ids contem contas que nao fazem parte "
+                "de twitter_account_ids."
+            )
+
+        all_media_ids: list[uuid.UUID] = [
+            media_id
+            for media_ids in account_media_ids.values()
+            for media_id in media_ids
+        ]
+        if len(set(all_media_ids)) != len(all_media_ids):
+            raise ValidationError(
+                "Uma midia nao pode ser usada em mais de uma conta."
+            )
+
+        return {
+            account_id: self._validate_and_load_media(
+                user_id=user_id, media_ids=media_ids
+            )
+            for account_id, media_ids in account_media_ids.items()
+        }
 
     def _validate_rendered_texts(
         self,
@@ -481,7 +603,16 @@ class PostService(BaseService[Post]):
             # qualquer outro caminho que tenha contornado a validacao
             # de criacao. Nunca publica o mesmo texto em 2+ das contas
             # sendo enviadas nesta chamada quando a regra se aplica.
-            if len(post_accounts) >= MANDATORY_VARIATION_ACCOUNT_THRESHOLD:
+            # A obrigatoriedade de variacao distinta em 5+ contas e uma
+            # regra exclusiva da Publicacao Inteligente (modo SHARED) --
+            # nao existe "original" nem "variacao" no modo INDEPENDENT
+            # (Fluxo 2), onde cada conta ja e um texto proprio e
+            # independente por definicao (duplicar texto entre contas e
+            # permitido, e uma decisao manual do usuario).
+            if (
+                post.composition_mode is PostCompositionMode.SHARED
+                and len(post_accounts) >= MANDATORY_VARIATION_ACCOUNT_THRESHOLD
+            ):
                 all_effective_texts = [
                     post_account.rendered_text or post.text
                     for post_account in post_accounts
@@ -504,23 +635,30 @@ class PostService(BaseService[Post]):
             # link no texto consomem `LINK_CREDITS_PER_ACCOUNT` (15)
             # creditos por conta publicada; qualquer outro post (texto
             # simples ou com midia anexada) continua consumindo 1,
-            # comportamento identico ao anterior a esta regra. A
-            # classificacao usa sempre `post.text` (o texto ORIGINAL,
-            # nunca sobrescrito) -- suficiente e correto mesmo com
-            # Publicacao Inteligente, ja que toda variacao preserva
-            # exatamente os links do original (`preserves_invariants`
-            # descarta qualquer variacao que adicione ou remova um link).
-            credits_per_account = credits_per_account_for_post(post.text)
+            # comportamento identico ao anterior a esta regra. Calculado
+            # a partir do texto EFETIVO de cada conta (`rendered_text or
+            # post.text`) -- no modo SHARED isso sempre da o mesmo
+            # resultado para todas as contas (toda variacao preserva
+            # exatamente os links do original, `preserves_invariants`
+            # descarta qualquer variacao que adicione ou remova um
+            # link), mas no modo INDEPENDENT cada conta tem seu proprio
+            # texto e pode ter um custo diferente das demais.
+            credits_by_post_account_id = {
+                post_account.id: credits_per_account_for_post(
+                    post_account.rendered_text or post.text
+                )
+                for post_account in accounts_to_publish
+            }
 
             # Validacao completa de negocio ANTES de qualquer chamada
             # externa. Se a assinatura nao existir, estiver inativa ou
-            # sem saldo suficiente para todas as contas pendentes (no
-            # custo por conta calculado acima), nenhuma publicacao
-            # ocorre e a excecao sobe para a rota (que faz rollback --
-            # nada e alterado).
+            # sem saldo suficiente para todas as contas pendentes (na
+            # soma dos custos por conta calculados acima), nenhuma
+            # publicacao ocorre e a excecao sobe para a rota (que faz
+            # rollback -- nada e alterado).
             subscription = self.subscription_service.ensure_can_publish(
                 post.user_id,
-                required_posts=len(accounts_to_publish) * credits_per_account,
+                required_posts=sum(credits_by_post_account_id.values()),
             )
 
             for account_index, post_account in enumerate(accounts_to_publish):
@@ -563,15 +701,21 @@ class PostService(BaseService[Post]):
                     # identico ao anterior a esta funcionalidade.
                     text_to_publish = post_account.rendered_text or post.text
 
-                    # Midia (ver docs/ROADMAP_MEDIA.md): IDENTICA para
-                    # todas as contas -- mas cada conta do X tem seu
-                    # proprio access_token/biblioteca de midia, entao o
-                    # mesmo arquivo local precisa ser enviado ao X uma
-                    # vez POR CONTA, imediatamente antes de criar o
+                    # Midia (ver docs/ROADMAP_MEDIA.md e
+                    # app.models.enums.PostCompositionMode): a
+                    # compartilhada entre todas as contas mais a
+                    # exclusiva DESTA conta, se houver (modo
+                    # INDEPENDENT com midia individualizada) -- cada
+                    # conta do X tem seu proprio access_token/biblioteca
+                    # de midia, entao o arquivo precisa ser enviado ao X
+                    # uma vez POR CONTA, imediatamente antes de criar o
                     # tweet desta conta. Falha no upload de midia cai
                     # nos mesmos handlers de excecao abaixo (marca este
                     # PostAccount como FAILED, nunca publica o texto sem
                     # a midia esperada).
+                    media_for_account = self.post_media_repository.list_for_post_account(
+                        post_id=post.id, post_account_id=post_account.id
+                    )
                     x_media_ids = [
                         self.x_oauth_client.upload_media(
                             access_token=access_token,
@@ -580,7 +724,7 @@ class PostService(BaseService[Post]):
                             media_category=x_media_category_for(media_item.media_type.value),
                             total_bytes=media_item.file_size_bytes,
                         )
-                        for media_item in post.media
+                        for media_item in media_for_account
                     ]
 
                     published_post = self.x_oauth_client.publish_post(
@@ -641,16 +785,16 @@ class PostService(BaseService[Post]):
 
                 try:
                     # A capacidade ja foi validada acima (para todas as
-                    # `accounts_to_publish`, no custo total ja
-                    # multiplicado por `credits_per_account`); o consumo
-                    # efetivo por conta publicada com sucesso mantem
-                    # `used_posts` correto mesmo se parte das contas
-                    # falhar -- cada conta bem-sucedida consome
-                    # exatamente `credits_per_account` creditos (1 ou 15,
-                    # ver calculo acima), nunca um valor fixo.
+                    # `accounts_to_publish`, na soma de
+                    # `credits_by_post_account_id`); o consumo efetivo
+                    # por conta publicada com sucesso mantem `used_posts`
+                    # correto mesmo se parte das contas falhar -- cada
+                    # conta bem-sucedida consome exatamente o credito
+                    # calculado PARA ELA (1 ou 15, ver calculo acima),
+                    # nunca um valor fixo nem o de outra conta.
                     self.subscription_service.consume_posts(
                         subscription.id,
-                        credits_per_account,
+                        credits_by_post_account_id[post_account.id],
                     )
                     self.db.commit()
                 except BaseAppException:

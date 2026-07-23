@@ -97,8 +97,15 @@ export function IntelligentPublicationPreviewModal({
 
   const hasEmptyText = texts.some((text) => !text.trim());
   const hasTextOverLimit = texts.some((text) => text.length > 280);
-  const hasDuplicateText =
-    !!preview?.is_variation_required && new Set(normalizedTexts).size !== normalizedTexts.length;
+  const hasAnyDuplicate =
+    texts.length >= 2 && new Set(normalizedTexts).size !== normalizedTexts.length;
+  const hasDuplicateText = !!preview?.is_variation_required && hasAnyDuplicate;
+  // Mesmo texto em 2+ contas fora do caso obrigatório (5+ contas, ja
+  // bloqueado acima) -- risco de deteccao de conteudo repetitivo pelo X
+  // (ver docs/AUDITORIA_SEGURANCA.md), mas nunca bloqueia: publicar o
+  // mesmo conteudo em poucas contas e um uso legitimo e comum (a
+  // variacao e OPCIONAL de proposito nessa faixa).
+  const hasDuplicateWarning = hasAnyDuplicate && !hasDuplicateText;
 
   const canConfirm =
     !isLoading && !!preview && !hasEmptyText && !hasTextOverLimit && !hasDuplicateText;
@@ -190,15 +197,27 @@ export function IntelligentPublicationPreviewModal({
                 </Alert>
               )}
 
+              {hasDuplicateWarning && (
+                <Alert variant="warning">
+                  <AlertTriangle />
+                  <AlertDescription>
+                    O mesmo texto está sendo publicado em mais de uma conta. Isso aumenta o risco de
+                    a plataforma X identificar um padrão repetitivo entre elas — considere variar o
+                    texto de cada conta. Você ainda pode confirmar assim mesmo.
+                  </AlertDescription>
+                </Alert>
+              )}
+
               <div className="max-h-[22rem] space-y-2.5 overflow-y-auto pr-1 scrollbar-thin">
                 {preview.accounts.map((account) => {
                   const currentValue =
                     editedTexts[account.twitter_account_id] ?? account.text;
                   const isEmpty = !currentValue.trim();
-                  const isDuplicate =
-                    !!preview.is_variation_required &&
-                    normalizedTexts.filter((text) => text === currentValue.trim().toLowerCase())
-                      .length > 1;
+                  const normalizedValue = currentValue.trim().toLowerCase();
+                  const isRepeatedAcrossAccounts =
+                    normalizedTexts.filter((text) => text === normalizedValue).length > 1;
+                  const isDuplicate = !!preview.is_variation_required && isRepeatedAcrossAccounts;
+                  const isDuplicateWarning = !preview.is_variation_required && isRepeatedAcrossAccounts;
 
                   return (
                     <VariationAccountCard
@@ -207,6 +226,7 @@ export function IntelligentPublicationPreviewModal({
                       value={currentValue}
                       isEmpty={isEmpty}
                       isDuplicate={isDuplicate}
+                      isDuplicateWarning={isDuplicateWarning}
                       onChange={(value) =>
                         setEditedTexts((current) => ({
                           ...current,

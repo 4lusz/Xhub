@@ -67,6 +67,14 @@ export function TermsOfUsePage() {
             são definidos previamente, por escrito, no momento da configuração da sua conta.
             Alterações de plano são feitas mediante solicitação para {CONTACT_EMAIL}.
           </p>
+          <p className="mt-2">
+            Os custos de operação do XHub dependem do acesso à API oficial do X (Twitter),
+            cobrada em dólar americano e sujeita a alterações de precificação pelo próprio X. Por
+            isso, os valores dos planos podem ser reajustados em caso de mudança na precificação
+            dessa API ou de variação cambial significativa do dólar frente ao real. Qualquer
+            reajuste nesse sentido será comunicado por e-mail aos clientes ativos com pelo menos 30
+            dias de antecedência antes de entrar em vigor.
+          </p>
         </section>
 
         <section>

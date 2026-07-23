@@ -110,7 +110,11 @@ export function DashboardPage() {
                 {recentPosts.map((post) => (
                   <li key={post.id} className="flex items-center justify-between gap-4 py-3">
                     <div className="min-w-0">
-                      <p className="truncate text-sm text-foreground">{truncate(post.text, 80)}</p>
+                      <p className="truncate text-sm text-foreground">
+                        {post.composition_mode === "independent"
+                          ? `${post.accounts.length} tweets independentes`
+                          : truncate(post.text ?? "", 80)}
+                      </p>
                       <p className="text-xs text-subtle-foreground">
                         {formatRelativeTime(post.created_at)}
                       </p>

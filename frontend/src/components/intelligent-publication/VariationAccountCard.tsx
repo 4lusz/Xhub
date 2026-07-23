@@ -12,7 +12,10 @@ interface VariationAccountCardProps {
   account: AccountPreview;
   value: string;
   isEmpty: boolean;
+  /** Bloqueia a confirmação (hoje só no caso de 5+ contas, variação obrigatória). */
   isDuplicate: boolean;
+  /** Mesmo texto de outra conta, mas SEM bloquear (2-4 contas, variação opcional) -- apenas um alerta visual, o usuário pode confirmar mesmo assim. */
+  isDuplicateWarning?: boolean;
   onChange: (value: string) => void;
 }
 
@@ -21,10 +24,12 @@ export function VariationAccountCard({
   value,
   isEmpty,
   isDuplicate,
+  isDuplicateWarning,
   onChange,
 }: VariationAccountCardProps) {
   const isOverLimit = value.length > 280;
   const hasIssue = isEmpty || isDuplicate || isOverLimit;
+  const hasWarning = !hasIssue && isDuplicateWarning;
 
   return (
     <motion.div
@@ -33,7 +38,7 @@ export function VariationAccountCard({
       transition={{ duration: 0.2 }}
       className={cn(
         "space-y-2 rounded-lg border bg-surface p-3 transition-colors",
-        hasIssue ? "border-destructive/50" : "border-border",
+        hasIssue ? "border-destructive/50" : hasWarning ? "border-warning/50" : "border-border",
       )}
     >
       <div className="flex items-center justify-between gap-2">
@@ -75,6 +80,12 @@ export function VariationAccountCard({
           <span className="inline-flex items-center gap-1 text-xs text-destructive">
             <AlertTriangle className="h-3 w-3" />
             {isEmpty ? "Texto vazio" : "Texto duplicado"}
+          </span>
+        )}
+        {hasWarning && (
+          <span className="inline-flex items-center gap-1 text-xs text-warning">
+            <AlertTriangle className="h-3 w-3" />
+            Igual a outra conta
           </span>
         )}
       </div>

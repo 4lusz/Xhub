@@ -1,3 +1,69 @@
+# CHANGELOG — Auditoria de segurança completa pré-commit (JWT + rate limiting)
+
+Detalhe completo em `CHANGELOG.md` (raiz) e `docs/AUDITORIA_SEGURANCA.md`.
+
+- **Migration `d7e8f9a0b1c2`** — tabela `revoked_access_tokens` (`jti`
+  PK, `expires_at`, `revoked_at`).
+- **`app/models/revoked_access_token.py`** (novo).
+- **`app/repositories/revoked_access_token_repository.py`** (novo) —
+  `is_revoked`, `revoke` (idempotente), `delete_expired`.
+- **`app/auth/jwt.py`** — todo access token ganhou claim `jti` (UUID).
+- **`app/services/auth_service.py`** — `revoke_access_token` (decodifica,
+  extrai `jti`/`exp`, revoga e limpa entradas expiradas).
+- **`app/auth/dependencies.py`** — `_resolve_authenticated_user` rejeita
+  qualquer token com `jti` revogado; `oauth2_scheme_optional` (nunca
+  falha sozinho, usado só no logout).
+- **`app/routes/auth.py`** — `POST /auth/logout` também revoga o
+  access token em uso, além do refresh token.
+- **`app/middleware/rate_limit.py`** — segunda dimensão de limite por
+  usuário autenticado (JWT `sub`, sem verificar assinatura) ou alvo
+  submetido (e-mail no login, token no refresh/2FA), independente do
+  IP; `AUTH_LOGIN_RATE_LIMIT_MAX_REQUESTS` (novo, padrão 5) para
+  login/refresh/2FA.
+
+Validado: `pytest` (14/14, 8 novos: `test_rate_limit.py`,
+`test_security_headers.py`, 2 em `test_routes_auth.py`, 2 em
+`test_routes_post.py`), requisições HTTP reais confirmando o ciclo
+completo login → logout → token rejeitado (401) → refresh token
+também rejeitado.
+
+# CHANGELOG — Separação Fluxo 1/Fluxo 2 de composição de post
+
+Detalhe completo em `CHANGELOG.md` (raiz), `docs/ROADMAP_COMPOSICAO_POST.md`
+e `docs/AUDITORIA_SEGURANCA.md`.
+
+- **Migration `c6d7e8f9a0b1`** — `posts.composition_mode` (enum nativo
+  `post_composition_mode`, default `SHARED` para linhas existentes),
+  `posts.text` passa a nullable, `post_media.post_account_id` (FK
+  nullable para `post_accounts.id`).
+- **`app/models/enums.py`** — `PostCompositionMode`. Não duplicado em
+  `app.domain.enums` (diferente de `UserRole`/`SubscriptionStatus`) —
+  as funções de domínio usam tipos primitivos.
+- **`app/domain/post_composition.py`** (novo) — `find_accounts_missing_independent_text`,
+  função pura.
+- **`app/repositories/post_media_repository.py`** —
+  `list_for_post_account` (mídia compartilhada + individual de uma
+  conta, window function); `attach_to_post` ganhou `post_account_id`
+  opcional.
+- **`app/services/post_service.py`** — `create_post` bifurca por
+  `composition_mode` (texto principal obrigatório/proibido, texto por
+  conta obrigatório/opcional, mídia compartilhada e/ou individual via
+  `_validate_and_load_account_media`, que rejeita reuso da mesma mídia
+  em contas diferentes); `publish_post` pula a checagem de variação
+  obrigatória de 5+ contas fora do modo SHARED e calcula o custo por
+  conta a partir do texto EFETIVO de cada uma (antes, uma única vez
+  sobre `Post.text`).
+- **`app/routes/post.py`** — `CreatePostRequest` ganhou
+  `composition_mode`, `text` opcional, `account_media_ids`;
+  `PostResponse`/`PostAccountResponse` expõem `composition_mode` e
+  `rendered_text`; `PostMediaResponse` expõe `post_account_id`.
+
+Validado: `pytest` (6/6, sem regressão), script descartável com 17
+checagens (criação nos dois modos, texto faltando/proibido, mídia
+compartilhada vs. individual, reuso de mídia entre contas rejeitado,
+custo por texto com/sem link) e requisições HTTP reais contra o
+backend local — tudo removido/limpo após validar.
+
 # CHANGELOG — Coleta decrescente de métricas por idade do post
 
 Detalhe completo em `CHANGELOG.md` (raiz) e `docs/ROADMAP_METRICAS.md`.

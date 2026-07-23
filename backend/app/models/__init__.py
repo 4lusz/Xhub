@@ -24,6 +24,7 @@ from app.models.post_account import PostAccount
 from app.models.post_media import PostMedia
 from app.models.post_metric_snapshot import PostMetricSnapshot
 from app.models.refresh_token import RefreshToken
+from app.models.revoked_access_token import RevokedAccessToken
 from app.models.scheduled_post import ScheduledPost
 from app.models.subscription import Subscription
 from app.models.twitter_account import TwitterAccount
@@ -41,6 +42,7 @@ __all__ = [
     "AuditLog",
     "OAuthSession",
     "RefreshToken",
+    "RevokedAccessToken",
     "JitterSettings",
     "AccountMetricSnapshot",
     "PostMetricSnapshot",

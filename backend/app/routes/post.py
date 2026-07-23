@@ -24,7 +24,7 @@ from app.core.exceptions import (
 from app.database.session import get_db
 from app.domain.media_rules import MAX_MEDIA_PER_POST
 from app.domain.plans import MAX_ACCOUNTS_ACROSS_PLANS
-from app.models.enums import PostAccountStatus, PostStatus
+from app.models.enums import PostAccountStatus, PostCompositionMode, PostStatus
 from app.models.post import Post
 from app.models.scheduled_post import ScheduledPost
 from app.models.user import User
@@ -39,28 +39,37 @@ router = APIRouter(
 
 
 class CreatePostRequest(BaseModel):
-    text: str = Field(
-        min_length=1,
-        max_length=280,
-    )
+    # Fluxo 1 (SHARED, default) vs Fluxo 2 (INDEPENDENT) -- ver
+    # app.models.enums.PostCompositionMode e CLAUDE.md. Default SHARED
+    # preserva o comportamento e o contrato de API anteriores a esta
+    # funcionalidade para qualquer cliente existente.
+    composition_mode: PostCompositionMode = Field(default=PostCompositionMode.SHARED)
+    # Obrigatorio no modo SHARED (texto original do post); deve vir
+    # ausente/vazio no modo INDEPENDENT, onde nao existe texto
+    # principal -- cada conta tem o seu proprio em `rendered_texts`.
+    text: str | None = Field(default=None, max_length=280)
     twitter_account_ids: list[uuid.UUID] = Field(
         min_length=1,
         max_length=MAX_ACCOUNTS_ACROSS_PLANS,
     )
-    # Publicacao Inteligente (ver
+    # Modo SHARED (Publicacao Inteligente, ver
     # docs/ROADMAP_PUBLICACAO_INTELIGENTE.md): texto final por conta,
     # aprovado apos `POST /intelligent-publication/preview` (variacao
-    # gerada por IA e/ou editada manualmente). Chave = twitter_account_id
-    # (string, mesmo formato de `twitter_account_ids`). Opcional -- sem
-    # este campo, o comportamento e identico ao anterior a esta
-    # funcionalidade (publica sempre o texto original em todas as
-    # contas).
+    # gerada por IA e/ou editada manualmente) -- OPCIONAL, sem este
+    # campo publica sempre o texto original em todas as contas.
+    # Modo INDEPENDENT: o proprio tweet de cada conta, escrito
+    # manualmente -- OBRIGATORIO para toda conta selecionada, sem
+    # relacao com nenhum texto original (que nem existe nesse modo).
     rendered_texts: dict[uuid.UUID, str] | None = Field(default=None)
-    # Midia (ver docs/ROADMAP_MEDIA.md): ids de PostMedia ja enviados
-    # via POST /media/upload (ainda sem post_id), na ordem de
-    # publicacao. Identica para todas as contas -- nunca alterada pela
-    # Publicacao Inteligente.
+    # Midia compartilhada (ver docs/ROADMAP_MEDIA.md): ids de PostMedia
+    # ja enviados via POST /media/upload (ainda sem post_id), na ordem
+    # de publicacao. Usada em ambos os modos -- identica para todas as
+    # contas, nunca alterada pela Publicacao Inteligente.
     media_ids: list[uuid.UUID] | None = Field(default=None, max_length=MAX_MEDIA_PER_POST)
+    # Midia individual por conta -- so disponivel no modo INDEPENDENT,
+    # e mutuamente exclusiva com `media_ids` (escolha uma ou outra).
+    # Chave = twitter_account_id.
+    account_media_ids: dict[uuid.UUID, list[uuid.UUID]] | None = Field(default=None)
 
 
 class PostAccountResponse(BaseModel):
@@ -74,12 +83,22 @@ class PostAccountResponse(BaseModel):
     # apenas para o administrador, via `GET /admin/posts`
     # (`AdminPostAccountResponse`), para auditoria e suporte.
     x_post_id: str | None
+    # Texto efetivo desta conta -- sempre presente no modo INDEPENDENT
+    # (Fluxo 2); no modo SHARED, so quando ha variacao/edicao da
+    # Publicacao Inteligente (senao `None`, e o cliente publica
+    # `Post.text`).
+    rendered_text: str | None
 
 
 class PostResponse(BaseModel):
     id: str
     user_id: str
-    text: str
+    composition_mode: PostCompositionMode
+    # `None` somente no modo INDEPENDENT (Fluxo 2) -- nao existe texto
+    # principal, cada conta tem o seu proprio em `accounts` (ver
+    # PostAccountResponse -- hoje sem rendered_text exposto ao cliente
+    # aqui; o texto de cada conta so e necessario na tela de criacao).
+    text: str | None
     status: PostStatus
     created_at: datetime
     updated_at: datetime
@@ -106,6 +125,7 @@ def _to_post_account_response(post_account) -> PostAccountResponse:
         username=post_account.twitter_account.username,
         status=post_account.status,
         x_post_id=post_account.x_post_id,
+        rendered_text=post_account.rendered_text,
     )
 
 
@@ -117,6 +137,7 @@ def _to_media_response(media) -> PostMediaResponse:
         file_size_bytes=media.file_size_bytes,
         position=media.position,
         created_at=media.created_at,
+        post_account_id=str(media.post_account_id) if media.post_account_id else None,
     )
 
 
@@ -124,6 +145,7 @@ def _to_post_response(post: Post) -> PostResponse:
     return PostResponse(
         id=str(post.id),
         user_id=str(post.user_id),
+        composition_mode=post.composition_mode,
         text=post.text,
         status=post.status,
         created_at=post.created_at,
@@ -183,10 +205,12 @@ def create_post(
     try:
         post = post_service.create_post(
             user_id=current_user.id,
+            composition_mode=request.composition_mode,
             text=request.text,
             twitter_account_ids=request.twitter_account_ids,
             rendered_texts=request.rendered_texts,
             media_ids=request.media_ids,
+            account_media_ids=request.account_media_ids,
         )
 
         db.commit()
